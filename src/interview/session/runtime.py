@@ -8,6 +8,16 @@ injected ports.
 
 `pack_id=stage4-freeform` keeps the stage-4 freeform interviewer. Any other pack
 id loads the stage-5 agent: tools, guard, verbatim spine.
+
+Stage 11 adds two orthogonal switches:
+
+  - `panel_mode` — 2-3 interviewer agents, one per pack panel role, all sharing
+    the single `SessionTools` and therefore the single guard. The panel decides
+    only who speaks; the guard still decides what may be asked. One voice at a
+    time, because the speak path is serialised through `_gen_task` exactly as it
+    was with one agent.
+  - `lane` — "voice" or "text". The text lane is the same bus, agent, guard and
+    evaluation with no audio; the injected SpeakPort is what differs.
 """
 
 from __future__ import annotations
@@ -23,6 +33,7 @@ from typing import TYPE_CHECKING, Awaitable, Callable, Protocol
 from interview.events.schema import (
     AgentStep,
     DraftReady,
+    FallbackUsed,
     FinalTranscript,
     IntensityChange,
     RouteDecision,
@@ -30,10 +41,11 @@ from interview.events.schema import (
     Truncate,
 )
 from interview.packs.model import PackLoadError, load_pack
-from interview.session.agent import LiveAgent, Outcome, phrase_probe
+from interview.session.agent import LiveAgent, Outcome, phrase_probe, propose
 from interview.session.guard import Intent
 from interview.session.intensity import apply_tone, step_down, step_up, with_hint
 from interview.session.interviewer import LeadInterviewer
+from interview.session.panel import Panel
 from interview.session.router import concession_line, draft_is_stale, route_answer
 from interview.session.signals import ClaimHint, SignalExtractor, SignalReading
 from interview.session.tools import SessionTools, load_claims_fixture
@@ -58,7 +70,13 @@ CLOSER = (
 class SpeakPort(Protocol):
     """Injected by the composition root; typically wraps FakeTts or TtsAdapter."""
 
-    async def synthesise(self, text: str, utterance_id: str, turn_id: str) -> None: ...
+    async def synthesise(
+        self,
+        text: str,
+        utterance_id: str,
+        turn_id: str,
+        voice: str = "",
+    ) -> None: ...
 
 
 OnWire = Callable[[dict], Awaitable[None]]
@@ -71,6 +89,9 @@ class PreparedDraft:
     plain: str
     concession: str
     claim_hits: list[str]
+    # Who drafted it. The same voice speaks it, so a follow-up does not change
+    # speaker between the draft and the line.
+    persona: str | None = None
 
 
 @dataclass
@@ -86,6 +107,10 @@ class SessionConfig:
     max_tool_calls: int | None = None
     # Stage 6 claims.json. Unset keeps the stage-5 fixture.
     claims_path: str | None = None
+    # Stage 11. Panel mode needs a pack with a panel roster; without one the
+    # session runs single-voice and `panel.enabled` stays False.
+    panel_mode: bool = False
+    lane: str = "voice"  # "voice" | "text"
 
 
 @dataclass
@@ -108,6 +133,10 @@ class LiveSession:
         self._closed = False
         self._end_after_turn = False
         self._agent: LiveAgent | None = None
+        # persona → agent. One entry outside panel mode; all entries share one
+        # SessionTools, so they share one guard.
+        self._agents: dict[str, LiveAgent] = {}
+        self._panel: Panel | None = None
         self._tools: SessionTools | None = None
         self._controller: TurnController | None = None
         self._extractor: SignalExtractor | None = None
@@ -160,7 +189,28 @@ class LiveSession:
         if self.config.max_tool_calls is not None:
             kwargs["max_tool_calls"] = self.config.max_tool_calls
         self._tools = tools
-        self._agent = LiveAgent(self.bus, self.session_id, tools, **kwargs)
+        panel = Panel.build(pack, enabled=self.config.panel_mode)
+        self._panel = panel
+        if self.config.panel_mode and not panel.enabled:
+            log.warning(
+                "Pack %s has no panel roster; running single-voice",
+                self.config.pack_id,
+            )
+        # One agent per voice in the room. They are handed the *same* tools
+        # object, which is what "several interviewer agents sharing one guard"
+        # means concretely: there is one coverage list, one depth counter and
+        # one claims scope for the whole panel.
+        self._agents = {
+            role.persona: LiveAgent(
+                self.bus,
+                self.session_id,
+                tools,
+                persona=panel.persona_for_log(role.persona),
+                **kwargs,
+            )
+            for role in panel.roles
+        }
+        self._agent = self._agents[panel.lead.persona]
         self._extractor = SignalExtractor(
             claims=[ClaimHint(id=claim.id, text=claim.text) for claim in tools.claims]
         )
@@ -170,6 +220,56 @@ class LiveSession:
             self._extractor,
             on_likely=self._speculate,
             on_barge=self._cancel_speculative,
+            persona=self._current_persona,
+        )
+
+    # ------------------------------------------------------------------
+    # Panel floor
+    # ------------------------------------------------------------------
+
+    def _current_persona(self) -> str | None:
+        """
+        The persona about to hold the floor, or None outside panel mode.
+
+        Deterministic and idempotent for a given guard state, so the
+        speculative loop, `likely_next`, `floor_granted` and the spoken line
+        all name the same voice.
+        """
+        if self._panel is None or not self._panel.enabled or self._tools is None:
+            return None
+        # `propose` is the same pure function the agent uses, over the same
+        # shared state, so asking it here costs nothing and cannot disagree
+        # with what the agent is about to do.
+        probing = propose(self._tools).action == "probe"
+        role = self._panel.floor_for_state(self._tools.guard_state(), probing=probing)
+        return self._panel.persona_for_log(role.persona)
+
+    def _agent_for(self, persona: str | None) -> LiveAgent | None:
+        """The panel member holding the floor; the lead outside panel mode."""
+        if persona and persona in self._agents:
+            return self._agents[persona]
+        return self._agent
+
+    def _voice_for(self, persona: str | None) -> str:
+        if self._panel is None or not self._panel.enabled:
+            return ""
+        return self._panel.role(persona).voice
+
+    async def note_fallback(self, kind: str, detail: str, turn_id: str | None = None) -> None:
+        """
+        Record that a degraded path was taken — stage 11.
+
+        Logged rather than inferred so "each fallback exercised once" is read
+        straight off the event log. `detail` is data, never an instruction.
+        """
+        await self.bus.emit(
+            FallbackUsed(
+                session_id=self.session_id,
+                turn_id=turn_id,
+                producer="hardening",
+                kind=kind,  # type: ignore[arg-type]
+                detail=detail,
+            )
         )
 
     def _turn_lock(self, turn_id: str) -> asyncio.Lock:
@@ -184,6 +284,11 @@ class LiveSession:
         self._bind_pack()
         if self._controller is not None:
             self._controller.attach()
+        if self.config.lane == "text":
+            await self.note_fallback(
+                "text_lane",
+                "no audio lane: delivery is not assessed for this session",
+            )
         await self._speak_fixed(OPENER, turn_id="turn-opener")
 
     async def end(self, reason: str = "client") -> None:
@@ -204,6 +309,8 @@ class LiveSession:
                 log_path=self.log_path,
                 pack_id=self.config.pack_id,
                 intensity_history=self._intensity_history,
+                lane="text" if self.config.lane == "text" else "voice",
+                personas=self._panel.spoken_order if self._panel else [],
             )
         )
         if self.on_wire:
@@ -214,6 +321,8 @@ class LiveSession:
                     "log_path": self.log_path,
                     "pack_id": self.config.pack_id,
                     "intensity_history": self._intensity_history,
+                    "lane": self.config.lane,
+                    "personas": self._panel.spoken_order if self._panel else [],
                 }
             )
 
@@ -275,7 +384,9 @@ class LiveSession:
         utterance_id = str(uuid.uuid4())
         try:
             if self._agent is not None:
-                outcome = await self._agent.run(
+                persona = self._current_persona()
+                agent = self._agent_for(persona) or self._agent
+                outcome = await agent.run(
                     turn_id=turn_id,
                     turn_index=self.turn_count - 1,
                 )
@@ -284,7 +395,9 @@ class LiveSession:
                 if outcome.kind == "end":
                     self._end_after_turn = True
                     return
-                await self._speak_question(outcome.text, turn_id, utterance_id)
+                await self._speak_question(
+                    outcome.text, turn_id, utterance_id, persona=persona
+                )
                 return
 
             iv = LeadInterviewer(
@@ -315,7 +428,13 @@ class LiveSession:
             )
             raise
 
-    async def _deliver(self, text: str, turn_id: str, utterance_id: str) -> None:
+    async def _deliver(
+        self,
+        text: str,
+        turn_id: str,
+        utterance_id: str,
+        persona: str | None = None,
+    ) -> None:
         raw = text
         text, rude = apply_tone(raw)
         if rude and self.history and self.history[-1].get("role") == "assistant":
@@ -330,6 +449,7 @@ class LiveSession:
                     band="live",
                     phase="speak",
                     summary="tone guardrail rewrote the line",
+                    persona=persona,
                 )
             )
         t0 = time.monotonic() - self._started_at
@@ -341,12 +461,27 @@ class LiveSession:
                     "utterance_id": utterance_id,
                     "turn_id": turn_id,
                     "text": text,
+                    "persona": persona,
+                    "speaker_label": (
+                        self._panel.role(persona).label
+                        if self._panel and self._panel.enabled
+                        else None
+                    ),
                 }
             )
             await self.on_wire(
-                {"type": "caption", "utterance_id": utterance_id, "text": text}
+                {
+                    "type": "caption",
+                    "utterance_id": utterance_id,
+                    "text": text,
+                    "persona": persona,
+                }
             )
-        await self.speak.synthesise(text, utterance_id, turn_id)
+        # One voice at a time: this await is the serialisation point, and
+        # `_gen_task` is awaited per turn, so two personas cannot overlap.
+        await self.speak.synthesise(
+            text, utterance_id, turn_id, self._voice_for(persona)
+        )
         t1 = time.monotonic() - self._started_at
         self.transcript.end_agent(utterance_id, t1)
         if self.on_wire:
@@ -362,12 +497,14 @@ class LiveSession:
             if turn_id in self._finished or turn_id in self._drafts:
                 return
             self._spec_task = asyncio.current_task()
+            persona = self._current_persona()
+            agent = self._agent_for(persona) or self._agent
             try:
                 if self._accepted_turn == turn_id:
                     turn_index = max(0, self.turn_count - 1)
                 else:
                     turn_index = self.turn_count
-                outcome = await self._agent.run(
+                outcome = await agent.run(
                     turn_id=turn_id,
                     turn_index=turn_index,
                     commit=False,
@@ -383,6 +520,7 @@ class LiveSession:
                         phase="cancelled",
                         summary="barge-in cancelled speculative step",
                         cancelled=True,
+                        persona=persona,
                     )
                 )
                 raise
@@ -397,6 +535,7 @@ class LiveSession:
                 plain=question,
                 concession=concession_line(question) if question else "",
                 claim_hits=list(reading.claim_hits),
+                persona=persona,
             )
 
     async def _cancel_speculative(self, _turn_id: str) -> None:
@@ -421,6 +560,9 @@ class LiveSession:
                 decision=route,
             )
         )
+        # The voice that drafted the line is the voice that speaks it.
+        persona = draft.persona
+        agent = self._agent_for(persona) or self._agent
         stale = draft_is_stale(draft.basis, event.text)
         if stale:
             self.stale_drafts += 1
@@ -433,6 +575,7 @@ class LiveSession:
                     band="live",
                     phase="think",
                     summary="stale draft; one short refresh",
+                    persona=persona,
                 )
             )
             if draft.outcome.kind == "probe":
@@ -449,10 +592,12 @@ class LiveSession:
         if draft.outcome.kind == "end" or not text:
             self._end_after_turn = True
             return
-        await self._agent.commit_outcome(turn_id, draft.outcome.decision)
+        await (agent or self._agent).commit_outcome(turn_id, draft.outcome.decision)
         await self._note_claim(turn_id, route, event.text, draft.claim_hits)
         utterance_id = str(uuid.uuid4())
-        await self._speak_question(text, turn_id, utterance_id, variant=variant)
+        await self._speak_question(
+            text, turn_id, utterance_id, variant=variant, persona=persona
+        )
 
     async def _note_claim(
         self,
@@ -479,6 +624,7 @@ class LiveSession:
         turn_id: str,
         utterance_id: str,
         variant: str = "plain",
+        persona: str | None = None,
     ) -> None:
         text = with_hint(self.config.intensity, text)
         self.history.append({"role": "assistant", "content": text})
@@ -496,9 +642,10 @@ class LiveSession:
                 first_sentence=first_sentence,
                 variant=spoken_variant,
                 utterance_id=utterance_id,
+                persona=persona,
             )
         )
-        await self._deliver(text, turn_id, utterance_id)
+        await self._deliver(text, turn_id, utterance_id, persona=persona)
 
     async def _note_distress(self, turn_id: str, triggers: list[str]) -> None:
         """One step down on distress, one step back after two calm turns."""
@@ -566,6 +713,13 @@ class LiveSession:
 
     async def _speak_fixed(self, text: str, *, turn_id: str) -> None:
         utterance_id = str(uuid.uuid4())
+        # Opener and closer always come from the lead: they are the room
+        # speaking, not one panel member's question.
+        persona = (
+            self._panel.persona_for_log(self._panel.lead.persona)
+            if self._panel
+            else None
+        )
         self.history.append({"role": "assistant", "content": text})
         await self.bus.emit(
             DraftReady(
@@ -575,9 +729,10 @@ class LiveSession:
                 first_sentence=text.split(".")[0].strip() + ("." if "." in text else ""),
                 variant="plain",
                 utterance_id=utterance_id,
+                persona=persona,
             )
         )
-        await self._deliver(text, turn_id, utterance_id)
+        await self._deliver(text, turn_id, utterance_id, persona=persona)
 
     async def _on_truncate(self, event: Truncate) -> None:
         self.transcript.truncate(

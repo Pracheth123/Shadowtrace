@@ -32,3 +32,13 @@ scoring_weights:
   structure: 0.20
   delivery: 0.15
   competency: 0.25
+# Stage 11 panel roster. One guard, distinct voices, one voice at a time.
+panel:
+  - persona: lead
+    label: Lead architect
+    voice: nova
+    competency: architecture
+  - persona: peer
+    label: Infrastructure peer
+    voice: alloy
+    competency: scale

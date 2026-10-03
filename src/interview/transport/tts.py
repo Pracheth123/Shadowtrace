@@ -80,6 +80,7 @@ class TtsAdapter:
         *,
         producer: str = "tts",
         stream_start_s: float | None = None,
+        voice: str = "",
     ) -> None:
         self._bus = bus
         self._session_id = session_id
@@ -90,7 +91,8 @@ class TtsAdapter:
 
         cfg = _load_tts_config()
         self._vendor = cfg.get("vendor", "mock")
-        self._voice = cfg.get("voice", "")
+        # Panel mode passes a per-persona voice; it wins over the config default.
+        self._voice = voice or cfg.get("voice", "")
         self._api_key = cfg.get("api_key", "")
         self._model = cfg.get("model", "")
         self._chunk_index = 0
@@ -203,7 +205,9 @@ class TtsAdapter:
     # ------------------------------------------------------------------
 
     async def _emit_chunk(self, audio_bytes: bytes, text: str) -> None:
-        ref = f"tts/{self._utterance_id}/chunk{self._chunk_index}.pcm"
+        # The voice is in the ref so a panel log says which voice spoke without
+        # adding a field to tts_chunk.
+        ref = f"tts/{self._voice or 'default'}/{self._utterance_id}/chunk{self._chunk_index}.pcm"
         t_audio_out = time.monotonic() - self._stream_start
 
         # Duration of this chunk in ms (16 kHz, 16-bit, mono = 2 bytes/sample)

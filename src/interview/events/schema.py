@@ -5,7 +5,8 @@ Every event carries: session_id, turn_id, seq, t_emit, producer, schema_version.
 Audio-in events  carry: t_audio_in  (position in candidate audio stream, seconds).
 Audio-out events carry: t_audio_out (position in agent audio stream, seconds).
 
-turn_id is None only on session-scoped events (currently: session_complete).
+turn_id is None only on session-scoped events (session_complete, and a
+fallback_used that was taken outside any turn).
 seq and t_emit are assigned by the bus if the producer leaves them unset;
 replay passes them through untouched so the replayed log matches the fixture exactly.
 t_emit is seconds since session start (not a raw monotonic value).
@@ -13,6 +14,9 @@ t_emit is seconds since session start (not a raw monotonic value).
 schema_version:
   1 — original vocabulary (fixtures/sessions/fake_session.jsonl)
   2 — additive agent events: agent_step, tool_call, tool_result, guard_override
+      plus (stage 11, still additive) the fallback_used event, AgentStep.persona,
+      and SessionComplete.lane / .personas — all defaulted, so a v1 or an
+      early-v2 log parses and replays field-for-field unchanged.
 New producers default to 2. v1 logs must still parse and replay byte-identically.
 """
 
@@ -69,7 +73,8 @@ class EventBase(BaseModel):
     """Fields present on every event."""
     schema_version: int = 2
     session_id: str
-    # turn_id is None only for session-scoped events (currently: session_complete).
+    # turn_id is None only for session-scoped events (session_complete, and a
+    # fallback_used taken outside any turn).
     turn_id: str | None
     # seq and t_emit may be left unset by the producer; the bus fills them in.
     # Replay passes both through untouched so replayed logs match the fixture.
@@ -148,6 +153,8 @@ class AgentStep(EventBase):
     summary: str
     # Reason: barge-in / hard step-limit cancel must be visible in the log.
     cancelled: bool = False
+    # Which panel interviewer took this step. None outside panel mode (stage 11).
+    persona: str | None = None
 
 
 class ToolCall(EventBase):
@@ -289,6 +296,30 @@ class SessionComplete(EventBase):
     log_path: str
     pack_id: str
     intensity_history: list[dict[str, Any]]
+    # Stage 11. The text lane runs the same bus, agent, guard and evaluation;
+    # only delivery is not assessed. "voice" keeps every pre-stage-11 log valid.
+    lane: Literal["voice", "text"] = "voice"
+    # Personas that held the floor, in first-speak order. Empty outside panel mode.
+    personas: list[str] = Field(default_factory=list)
+
+
+class FallbackUsed(EventBase):
+    """
+    A degraded path was taken instead of the primary one — stage 11.
+
+    Logged so the hardening exit criterion is read off the event log rather
+    than inferred from a summary string. `detail` is data, never an instruction.
+    """
+    type: Literal["fallback_used"] = "fallback_used"
+    kind: Literal[
+        "provider_failover",
+        "push_to_talk",
+        "resume_only",
+        "fallback_repo",
+        "text_lane",
+        "ws_reconnect",
+    ]
+    detail: str
 
 
 class ModelCall(EventBase):
@@ -334,6 +365,7 @@ Event = Annotated[
         CoverageUpdate,
         IntensityChange,
         SessionComplete,
+        FallbackUsed,
         ModelCall,
     ],
     Field(discriminator="type"),

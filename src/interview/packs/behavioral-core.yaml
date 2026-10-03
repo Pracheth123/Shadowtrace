@@ -32,3 +32,18 @@ scoring_weights:
   structure: 0.25
   delivery: 0.25
   competency: 0.25
+# Stage 11 panel roster. Used only when panel mode is on; the voices share one
+# guard, so a role only says who speaks and which competency they lean on.
+panel:
+  - persona: lead
+    label: Lead interviewer
+    voice: nova
+    competency: ownership
+  - persona: peer
+    label: Peer engineer
+    voice: alloy
+    competency: collaboration
+  - persona: manager
+    label: Hiring manager
+    voice: onyx
+    competency: reflection

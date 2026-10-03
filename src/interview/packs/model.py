@@ -44,6 +44,23 @@ class ProbePolicy(BaseModel):
     min_probe_s: float = Field(gt=0)
 
 
+class PanelRole(BaseModel):
+    """
+    One interviewer voice in panel mode — stage 11.
+
+    A pack declares who is in the room. The panel shares one guard, so a role
+    carries no rules of its own: it names a persona, a TTS voice, and the
+    competency this voice leans on when the shared guard leaves a free choice.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    persona: str
+    label: str
+    voice: str
+    competency: str
+
+
 class ScoringWeights(BaseModel):
     """Four dimensions. Equal weight by default; a pack may reweight."""
 
@@ -72,6 +89,34 @@ class Pack(BaseModel):
     competencies: list[Competency] = Field(min_length=1)
     probe_policy: ProbePolicy
     scoring_weights: ScoringWeights
+    # Stage 11, optional. A pack without a panel roster runs single-voice and
+    # panel mode falls back to one persona.
+    panel: list[PanelRole] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _panel_refs(self) -> "Pack":
+        if not self.panel:
+            return self
+        if len(self.panel) > 3:
+            raise ValueError("a panel is at most 3 voices")
+        known = {c.id for c in self.competencies}
+        seen: set[str] = set()
+        voices: set[str] = set()
+        for role in self.panel:
+            if role.persona in seen:
+                raise ValueError(f"duplicate panel persona {role.persona}")
+            seen.add(role.persona)
+            # Distinct voices are the whole point: one voice speaks at a time
+            # and the candidate has to be able to tell who it was.
+            if role.voice in voices:
+                raise ValueError(f"panel voice {role.voice!r} is used twice")
+            voices.add(role.voice)
+            if role.competency not in known:
+                raise ValueError(
+                    f"panel role {role.persona} competency "
+                    f"{role.competency!r} is not in competencies"
+                )
+        return self
 
     @model_validator(mode="after")
     def _spine_refs(self) -> "Pack":
@@ -100,6 +145,12 @@ class Pack(BaseModel):
 
     def spine_ids(self) -> list[str]:
         return [item.id for item in self.spine]
+
+    def panel_role(self, persona: str) -> PanelRole:
+        for role in self.panel:
+            if role.persona == persona:
+                return role
+        raise KeyError(persona)
 
 
 def load_pack(pack_id: str, directory: Path | None = None) -> Pack:

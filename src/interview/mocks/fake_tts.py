@@ -10,7 +10,7 @@ Word timestamps are uniformly spaced within the silence chunk.
 
 Usage::
 
-    tts = FakeTts(bus, session_id, turn_id, utterance_id)
+    tts = FakeTts(bus, session_id, turn_id, utterance_id, voice="nova")
     await tts.synthesise("How did you handle back-pressure?")
     # bus receives a tts_chunk with audio_ref pointing to a fake ref
     # and word_timestamps matching the text
@@ -48,12 +48,17 @@ class FakeTts:
         *,
         producer: str = "fake_tts",
         stream_start_s: float | None = None,
+        voice: str = "",
     ) -> None:
         self._bus = bus
         self._session_id = session_id
         self._turn_id = turn_id
         self._utterance_id = utterance_id
         self._producer = producer
+        # Panel mode gives each persona its own voice. It rides audio_ref rather
+        # than a new tts_chunk field, so which voice spoke is readable off the
+        # log without changing an event schema that is already in use.
+        self._voice = voice
         self._stream_start = stream_start_s or time.monotonic()
         self._chunk_index = 0
         self._audio_out_cursor_ms: int = 0
@@ -77,7 +82,8 @@ class FakeTts:
         ]
 
         t_audio_out = time.monotonic() - self._stream_start
-        ref = f"fake_tts/{self._utterance_id}/chunk{self._chunk_index}.pcm"
+        voice = self._voice or "default"
+        ref = f"fake_tts/{voice}/{self._utterance_id}/chunk{self._chunk_index}.pcm"
 
         await self._bus.emit(
             TtsChunk(

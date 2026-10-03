@@ -3,6 +3,9 @@ Longitudinal store — stage 9.
 
 SQLite, append-only. A trend is comparable only inside one pack: the query
 always filters on pack_id, and a missing pack is an error rather than a mix.
+
+Stage 11: a dimension marked not-assessed (text-lane delivery) is not written
+at all, so a trend has a gap there rather than a false zero.
 """
 
 from __future__ import annotations
@@ -80,11 +83,16 @@ class LongitudinalStore:
                 "INSERT INTO sessions (session_id, candidate_id, pack_id, started_at) VALUES (?, ?, ?, ?)",
                 (report.session_id, candidate_id, pack_id, started_at),
             )
+            # A dimension that was not assessed is not a zero. Text-lane
+            # delivery is skipped entirely rather than stored as 0.0, so a
+            # candidate who types one session does not show a cliff in their
+            # delivery trend (contract 9).
             conn.executemany(
                 "INSERT INTO dimension_scores (session_id, dimension, score, finding_count) VALUES (?, ?, ?, ?)",
                 [
                     (report.session_id, item.dimension, item.score, item.finding_count)
                     for item in report.dimensions
+                    if item.assessed
                 ],
             )
             conn.executemany(

@@ -42,6 +42,17 @@ def render_html(report: Report) -> str:
         )
     dimensions = []
     for item in report.dimensions:
+        if not item.assessed:
+            # Say it plainly. A 0.00 next to the other three would read as the
+            # worst score on the report rather than as "we did not measure it".
+            dimensions.append(
+                "<li>"
+                + html.escape(item.dimension)
+                + ": <em>not assessed</em> — this session ran in the "
+                + html.escape(report.lane)
+                + " lane, which has no spoken answer to assess.</li>"
+            )
+            continue
         dimensions.append(
             "<li>"
             + html.escape(item.dimension)

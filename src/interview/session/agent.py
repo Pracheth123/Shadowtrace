@@ -4,6 +4,10 @@ Minimal live-agent loop — stage 5.
 Asyncio tool loop with a hard step limit. The agent proposes the next move
 from tool results; the guard accepts or overrides. Spine is spoken from the
 pack verbatim. A probe is one question phrased from the guard-approved target.
+
+Stage 11: in panel mode there is one instance of this class per persona, all
+sharing one `SessionTools` and therefore one guard. `persona` is stamped on the
+steps this instance emits; it is None outside panel mode.
 """
 
 from __future__ import annotations
@@ -100,12 +104,16 @@ class LiveAgent:
         *,
         scripted_intents: dict[int, Intent] | None = None,
         max_tool_calls: int = DEFAULT_MAX_TOOL_CALLS,
+        persona: str | None = None,
     ) -> None:
         self._bus = bus
         self._session_id = session_id
         self._tools = tools
         self._scripted = scripted_intents or {}
         self._max_tool_calls = max_tool_calls
+        # None outside panel mode. Panel members differ only by this field and
+        # their voice — the rules they answer to are the one shared guard.
+        self.persona = persona
 
     async def run(self, *, turn_id: str, turn_index: int, commit: bool = True) -> Outcome:
         step = 0
@@ -143,6 +151,7 @@ class LiveAgent:
                 step_index=idx,
                 name=name,
                 args=args,
+                producer=self._producer,
             )
 
         await observe("candidate turn opened")
@@ -292,6 +301,13 @@ class LiveAgent:
                     break
         return phrase_probe(claim_text=claim_text, transcript_anchor=anchor)
 
+    @property
+    def _producer(self) -> str:
+        """Panel steps name their voice so a log is readable per persona."""
+        if self.persona:
+            return f"live_agent:{self.persona}"
+        return "live_agent"
+
     async def _emit_step(
         self, turn_id: str, step_index: int, phase: str, summary: str
     ) -> None:
@@ -299,11 +315,12 @@ class LiveAgent:
             AgentStep(
                 session_id=self._session_id,
                 turn_id=turn_id,
-                producer="live_agent",
+                producer=self._producer,
                 step_index=step_index,
                 band="live",
                 phase=phase,  # type: ignore[arg-type]
                 summary=summary,
+                persona=self.persona,
             )
         )
 

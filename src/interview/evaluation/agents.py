@@ -189,7 +189,26 @@ async def run_agents(
     turns: list[Turn],
     claim_ids: list[str],
     observations: list[Observation],
+    lane: str = "voice",
 ) -> list[Finding]:
+    """
+    Three evaluator agents, concurrently.
+
+    In the text lane the delivery agent does not run at all. Its whole method is
+    comparing how an answer was *said* against this candidate's own first spoken
+    answer, and a typed session has no such baseline — so there is nothing for
+    it to read, and inventing findings from word choice alone would make the two
+    lanes score differently for the same substance.
+    """
+    if lane == "text":
+        await tools.step(
+            "delivery", 0, "observe", "text lane: delivery is not assessed"
+        )
+        substance, structure = await asyncio.gather(
+            substance_agent(tools, turns, claim_ids),
+            structure_agent(tools, turns, observations),
+        )
+        return [*substance, *structure]
     substance, structure, delivery = await asyncio.gather(
         substance_agent(tools, turns, claim_ids),
         structure_agent(tools, turns, observations),

@@ -13,8 +13,10 @@ Per turn, reports:
     - first tts_chunk → first playback_ack (network + playback)
     - TOTAL: endpoint → first tts_chunk
 
-Flags any turn whose total exceeds 450 ms.
-Also prints p50 and p95 of the total across all turns.
+Flags any turn whose total exceeds the threshold (default 450 ms; pass
+--threshold-ms 1200 for a panel session, whose budget is 1.2 s p50).
+Also prints p50 and p95 of the total across all turns, and — in panel mode —
+which persona held the floor on each turn.
 """
 
 from __future__ import annotations
@@ -39,6 +41,8 @@ from interview.events.schema import (
 )
 
 THRESHOLD_MS = 450.0
+# Stage 11: a panel session's exit criterion is 1.2 s p50, not 450 ms.
+PANEL_THRESHOLD_MS = 1200.0
 
 
 def _ms(seconds: float) -> float:
@@ -53,7 +57,7 @@ def _pct(values: list[float], p: int) -> float:
     return sorted_v[idx]
 
 
-def compute_waterfall(log_path: Path) -> None:
+def compute_waterfall(log_path: Path, threshold_ms: float = THRESHOLD_MS) -> None:
     # Collect events bucketed by turn_id.
     by_turn: dict[str, list[Event]] = defaultdict(list)
     order: list[str] = []
@@ -109,9 +113,16 @@ def compute_waterfall(log_path: Path) -> None:
             total_ms = _ms(first_tts.t_emit - endpoint.t_emit)
             totals_ms.append(total_ms)
 
-        flag = "  !! EXCEEDS 450ms" if total_ms is not None and total_ms > THRESHOLD_MS else ""
+        flag = (
+            f"  !! EXCEEDS {threshold_ms:.0f}ms"
+            if total_ms is not None and total_ms > threshold_ms
+            else ""
+        )
 
-        print(f"  Turn {turn_id}")
+        # Panel mode fills persona on draft_ready; it is None otherwise.
+        persona = next((d.persona for d in drafts if d.persona), None)
+        who = f"  [{persona}]" if persona else ""
+        print(f"  Turn {turn_id}{who}")
         print(f"    last partial  -> endpoint        (endpoint detection):  {ep_det}")
         print(f"    endpoint      -> question_planned (planning):           {planning}")
         print(f"    endpoint      -> draft_ready      (TTFT):               {ttft}")
@@ -130,6 +141,8 @@ def compute_waterfall(log_path: Path) -> None:
         print(f"  Session summary ({len(totals_ms)} measured turns):")
         print(f"    p50 total (endpoint -> first tts_chunk): {p50:7.1f} ms")
         print(f"    p95 total (endpoint -> first tts_chunk): {p95:7.1f} ms")
+        verdict = "within" if p50 <= threshold_ms else "OVER"
+        print(f"    budget {threshold_ms:.0f} ms p50: {verdict}")
     else:
         print("  No turns with measurable latency found.")
 
@@ -141,8 +154,20 @@ def main() -> None:
         description="Per-turn latency breakdown from a JSONL session log."
     )
     parser.add_argument("log_file", type=Path, help="Path to the .jsonl log file")
+    parser.add_argument(
+        "--threshold-ms",
+        type=float,
+        default=THRESHOLD_MS,
+        help=f"Per-turn budget to flag against (panel: {PANEL_THRESHOLD_MS:.0f})",
+    )
+    parser.add_argument(
+        "--panel",
+        action="store_true",
+        help=f"Shorthand for --threshold-ms {PANEL_THRESHOLD_MS:.0f}",
+    )
     args = parser.parse_args()
-    compute_waterfall(args.log_file)
+    threshold = PANEL_THRESHOLD_MS if args.panel else args.threshold_ms
+    compute_waterfall(args.log_file, threshold)
 
 
 if __name__ == "__main__":

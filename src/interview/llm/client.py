@@ -3,6 +3,14 @@ Groq model client — OpenAI Python SDK against https://api.groq.com/openai/v1.
 
 All live / real-model paths go through this module. Unit and replay tests must
 use FakeLlm and never construct GroqModelClient with a real key.
+
+Stage 11 adds provider failover. A 429 is still a back-off-and-retry on the same
+model (the limiter owns that). A *hard* failure — auth, a model that has been
+withdrawn, a 5xx, a connection error — is different: retrying the same model
+cannot help. So the role is retried once on its configured fallback model, and
+if that also fails and `failover_to_mock` is on, the call degrades to the local
+mock rather than dropping the candidate mid-session. Each step emits a
+`fallback_used` event, so a session log says exactly which path was taken.
 """
 
 from __future__ import annotations
@@ -75,6 +83,8 @@ class GroqModelClient:
         self._base_url = groq.get("base_url", GROQ_BASE_URL)
         self._roles: dict[str, str] = dict(groq.get("roles") or {})
         self._max_retries = int(groq.get("max_retries_on_429", 5))
+        self._failover_roles: dict[str, str] = dict(groq.get("failover_roles") or {})
+        self._failover_to_mock = bool(groq.get("failover_to_mock", True))
         self._max_per_turn = int(groq.get("max_calls_per_turn", 3))
         self._limiter = get_shared_limiter(int(groq.get("requests_per_minute", 30)))
         self._budget = TurnCallBudget(self._max_per_turn)
@@ -91,6 +101,33 @@ class GroqModelClient:
         if role not in self._roles:
             raise KeyError(f"No model configured for role '{role}' in inference.yaml")
         return self._roles[role]
+
+    def failover_model_for(self, role: ModelRole) -> str | None:
+        """Second model to try for `role` on a hard failure, if one is configured."""
+        fallback = self._failover_roles.get(role)
+        if not fallback or fallback == self._roles.get(role):
+            return None
+        return fallback
+
+    async def _note_fallback(
+        self,
+        kind: str,
+        detail: str,
+        turn_id: str | None,
+    ) -> None:
+        if self._bus is None:
+            return
+        from interview.events.schema import FallbackUsed
+
+        await self._bus.emit(
+            FallbackUsed(
+                session_id=self._session_id or "unknown",
+                turn_id=turn_id,
+                producer="groq_client",
+                kind=kind,  # type: ignore[arg-type]
+                detail=detail,
+            )
+        )
 
     def _openai(self):
         from openai import AsyncOpenAI  # type: ignore
@@ -111,7 +148,14 @@ class GroqModelClient:
         max_tokens: int | None = None,
         temperature: float | None = None,
     ) -> AsyncIterator[str]:
-        """Stream completion tokens for `role`. Counts against turn/session budgets."""
+        """
+        Stream completion tokens for `role`. Counts against turn/session budgets.
+
+        On a hard failure the stream fails over to the role's fallback model,
+        then to the mock. Failover only happens before the first token: once the
+        candidate has heard the start of a sentence, switching models mid-stream
+        would splice two different answers together.
+        """
         model = self.model_for(role)
         call_index, turn_call_index = await self._budget.begin_call(turn_id)
         t0 = time.monotonic()
@@ -137,7 +181,22 @@ class GroqModelClient:
             status = getattr(exc, "status_code", None) or getattr(
                 getattr(exc, "response", None), "status_code", None
             )
-            raise
+            if ok:
+                # Already speaking. Do not splice a second model into the line.
+                raise
+            async for token in self._stream_failover(
+                role=role,
+                model=model,
+                messages=messages,
+                turn_id=turn_id,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                cause=exc,
+            ):
+                ok = True
+                yield token
+            if not ok:
+                raise
         finally:
             await self._emit_model_call(
                 role=role,
@@ -182,12 +241,32 @@ class GroqModelClient:
             )
             ok = True
             return result
+        except TurnCallBudgetExceeded:
+            raise
         except Exception as exc:  # noqa: BLE001
             err_msg = str(exc)
             status = getattr(exc, "status_code", None) or getattr(
                 getattr(exc, "response", None), "status_code", None
             )
-            raise
+            fallback = self.failover_model_for(role)
+            if not fallback:
+                raise
+            await self._note_fallback(
+                "provider_failover",
+                f"{role}: {model} failed ({_brief(exc)}); retrying on {fallback}",
+                turn_id,
+            )
+            result = await self._chat_with_retry(
+                model=fallback,
+                messages=messages,
+                tools=tools,
+                max_tokens=max_tokens or self._default_max_tokens,
+                temperature=(
+                    self._default_temperature if temperature is None else temperature
+                ),
+            )
+            ok = True
+            return result
         finally:
             await self._emit_model_call(
                 role=role,
@@ -200,6 +279,66 @@ class GroqModelClient:
                 status_code=status,
                 error=err_msg,
             )
+
+    async def _stream_failover(
+        self,
+        *,
+        role: ModelRole,
+        model: str,
+        messages: list[dict[str, Any]],
+        turn_id: str | None,
+        max_tokens: int | None,
+        temperature: float | None,
+        cause: BaseException,
+    ) -> AsyncIterator[str]:
+        """Fallback model, then the local mock. Each hop logs `fallback_used`."""
+        fallback = self.failover_model_for(role)
+        if fallback:
+            await self._note_fallback(
+                "provider_failover",
+                f"{role}: {model} failed ({_brief(cause)}); retrying on {fallback}",
+                turn_id,
+            )
+            try:
+                async for token in self._stream_with_retry(
+                    model=fallback,
+                    messages=messages,
+                    max_tokens=max_tokens or self._default_max_tokens,
+                    temperature=(
+                        self._default_temperature
+                        if temperature is None
+                        else temperature
+                    ),
+                ):
+                    yield token
+                return
+            except Exception as exc:  # noqa: BLE001
+                cause = exc
+                model = fallback
+
+        if not self._failover_to_mock:
+            return
+        await self._note_fallback(
+            "provider_failover",
+            f"{role}: {model} failed ({_brief(cause)}); degraded to local mock",
+            turn_id,
+        )
+        async for token in self._mock_stream(messages):
+            yield token
+
+    async def _mock_stream(self, messages: list[dict[str, Any]]) -> AsyncIterator[str]:
+        """
+        Last resort: the stage-3 mock, in-process.
+
+        The mock is already a first-class part of this repo, so the degraded
+        path is the same code the tests run against — not a second
+        implementation that only ever runs in an outage.
+        """
+        from interview.mocks.fake_llm import FakeLlm
+
+        fake = FakeLlm()
+        async for token in fake.stream(messages):
+            yield token
 
     async def _stream_with_retry(
         self,
@@ -311,6 +450,13 @@ class GroqModelClient:
                 error=error or None,
             )
         )
+
+
+def _brief(exc: BaseException) -> str:
+    """Short, loggable reason. Never the full provider payload."""
+    text = str(exc).strip().splitlines()
+    head = text[0] if text else exc.__class__.__name__
+    return head[:120]
 
 
 def _is_429(exc: BaseException) -> bool:

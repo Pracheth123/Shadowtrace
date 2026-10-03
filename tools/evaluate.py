@@ -29,6 +29,12 @@ def main() -> None:
     parser.add_argument("--claims", type=Path, default=None)
     parser.add_argument("--log", type=Path, default=None)
     parser.add_argument("--context", type=Path, action="append", default=[])
+    parser.add_argument(
+        "--lane",
+        choices=("voice", "text"),
+        default=None,
+        help="Override the lane. Default reads it from the log's session_complete.",
+    )
     args = parser.parse_args()
     report = asyncio.run(
         evaluate(
@@ -37,12 +43,16 @@ def main() -> None:
             claims_path=args.claims,
             log_path=args.log,
             context_paths=tuple(args.context),
+            lane=args.lane,
         )
     )
+    not_assessed = [item.dimension for item in report.dimensions if not item.assessed]
     print(
-        f"Wrote {args.out} session={report.session_id} "
+        f"Wrote {args.out} session={report.session_id} lane={report.lane} "
         f"findings={len(report.findings)} elapsed_s={report.elapsed_s}"
     )
+    if not_assessed:
+        print(f"  not assessed: {', '.join(not_assessed)}")
 
 
 if __name__ == "__main__":

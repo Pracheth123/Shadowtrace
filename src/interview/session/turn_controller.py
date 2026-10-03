@@ -4,6 +4,11 @@ Turn controller — stage 7.
 Stable, complete partials emit `likely_next` so the agent can draft while the
 candidate is still talking. `floor_granted` fires at endpoint. Barge-in is
 signalled to the caller, which cancels the in-flight agent step.
+
+Stage 11: in panel mode `persona` names the voice that is about to hold the
+floor. The controller does not pick it — it asks the injected `persona` callback,
+which is the panel's deterministic floor policy. Outside panel mode the callback
+returns None and these events are unchanged.
 """
 
 from __future__ import annotations
@@ -46,6 +51,8 @@ _TRAILING = frozenset(
 OnLikely = Callable[[str, str, SignalReading], Awaitable[None]]
 OnFloor = Callable[[str], Awaitable[None]]
 OnBarge = Callable[[str], Awaitable[None]]
+# Returns the persona about to speak, or None outside panel mode.
+PersonaFn = Callable[[], "str | None"]
 
 
 def looks_complete(text: str) -> bool:
@@ -65,6 +72,7 @@ class TurnController:
         on_likely: OnLikely,
         on_floor: OnFloor | None = None,
         on_barge: OnBarge | None = None,
+        persona: PersonaFn | None = None,
     ) -> None:
         self._bus = bus
         self._session_id = session_id
@@ -72,6 +80,7 @@ class TurnController:
         self._on_likely = on_likely
         self._on_floor = on_floor
         self._on_barge = on_barge
+        self._persona = persona or (lambda: None)
         self._last_text: dict[str, str] = {}
         self._fired: set[str] = set()
         self._floor: set[str] = set()
@@ -119,6 +128,7 @@ class TurnController:
                 turn_id=turn_id,
                 producer="turn_controller",
                 signal_snapshot=reading.model_dump(),
+                persona=self._persona(),
             )
         )
         await self._on_likely(turn_id, text, reading)
@@ -133,6 +143,7 @@ class TurnController:
                 session_id=self._session_id,
                 turn_id=turn_id,
                 producer="turn_controller",
+                persona=self._persona(),
             )
         )
         if self._on_floor:

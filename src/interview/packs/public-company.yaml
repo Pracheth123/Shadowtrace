@@ -34,3 +34,13 @@ scoring_weights:
   structure: 0.25
   delivery: 0.25
   competency: 0.25
+# Stage 11 panel roster. One guard, distinct voices, one voice at a time.
+panel:
+  - persona: lead
+    label: Lead interviewer
+    voice: nova
+    competency: ownership
+  - persona: bar_raiser
+    label: Bar raiser
+    voice: onyx
+    competency: judgment

@@ -1,5 +1,34 @@
 # Tasks
 
+## 2026-10-04 — Stage 11: Panel mode, hardening and lanes
+
+Brief: `docs/stages/stage-11-panel-hardening-lanes.md`
+Evidence: `docs/decisions/stage11_panel.md`
+
+- [x] Panel mode behind `PANEL_MODE`: 2–3 interviewer agents sharing one guard,
+      one voice at a time, distinct TTS voices from the pack roster
+- [x] `persona` filled on `likely_next`, `floor_granted`, `draft_ready`, `agent_step`
+      (additive, schema still v2; v1/early-v2 logs replay field-for-field unchanged)
+- [x] One evaluation per panel session, not one per persona
+- [x] Fallbacks, each exercised once and logged as `fallback_used`: provider
+      failover, push-to-talk, resume-only, fallback repo, text lane, WS reconnect
+- [x] Text lane — same bus, agent, guard and evaluation; delivery "not assessed"
+      and an unassessed dimension is not stored as a zero
+- [x] Optional video — local client preview only; no server ingest path, and
+      contract-9 enforcement by test
+- [x] Hardening: WS reconnect (one log across a drop), session cap, intake
+      rate limit, delete-my-data with a manifest
+- [x] Recorded `fixtures/sessions/stage11_{panel,text_lane,fallbacks}/`
+- [x] `tests/test_stage11_server.py` — the composition root driven through a
+      real WebSocket (this is what caught the reconnect subscription leak and
+      the disconnect-as-message bug)
+- [x] Live coding pack — **proposal only**, not built:
+      `docs/decisions/stage11_live_coding_proposal.md`
+- [ ] Live-vendor panel waterfall (the 1.2 s p50 exit criterion). Mock path
+      only: p50 0.5 ms, which measures the panel machinery, not the vendor legs.
+      `GROQ_API_KEY` is unset and no TTS vendor is configured, so the vendor call
+      was not run and no sleep was added to fake it. Same gap as stage 7.
+
 ## 2026-10-03 — Stage 10: Intensity and confidence guardrail
 
 Brief: `docs/stages/stage-10-intensity-guardrail.md`

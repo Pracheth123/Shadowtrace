@@ -47,6 +47,22 @@ def _intensity_note(log_path: Path | None) -> str:
     )
 
 
+def _lane_from_log(log_path: Path | None) -> str:
+    """
+    Which lane the session ran in, read from its own `session_complete`.
+
+    The caller may override, but defaulting to the log means an operator cannot
+    accidentally score a typed session's delivery by forgetting a flag.
+    """
+    if log_path is None or not log_path.is_file():
+        return "voice"
+    lane = "voice"
+    for event in read_events(log_path):
+        if event.type == "session_complete":
+            lane = event.lane
+    return lane
+
+
 def _event_rows(log_path: Path | None) -> list[dict]:
     if log_path is None or not log_path.is_file():
         return []
@@ -63,8 +79,10 @@ async def evaluate(
     claims_path: Path | None = None,
     log_path: Path | None = None,
     context_paths: tuple[Path, ...] = (),
+    lane: str | None = None,
 ) -> Report:
     started = time.perf_counter()
+    resolved_lane = lane or _lane_from_log(log_path)
     turns = load_turns(transcript_path)
     claims = load_claims(claims_path)
     judgements = adjudicate(claims, turns)
@@ -76,13 +94,20 @@ async def evaluate(
         (out_dir / "context.txt").write_text(context, encoding="utf-8")
     trace = EvalTrace(out_dir / "eval_trace.jsonl", session_id)
     tools = EvalTools(trace, turns, _event_rows(log_path), claims, judgements)
-    findings = await run_agents(tools, turns, [claim.id for claim in claims], observations)
+    findings = await run_agents(
+        tools,
+        turns,
+        [claim.id for claim in claims],
+        observations,
+        lane=resolved_lane,
+    )
     report = Report(
         session_id=session_id,
         claims=judgements,
         findings=findings,
-        dimensions=score_findings(findings),
+        dimensions=score_findings(findings, resolved_lane),  # type: ignore[arg-type]
         elapsed_s=round(time.perf_counter() - started, 4),
+        lane=resolved_lane,  # type: ignore[arg-type]
         intensity_note=_intensity_note(log_path),
     )
     trace.flush()

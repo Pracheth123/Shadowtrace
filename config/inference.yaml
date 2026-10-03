@@ -21,6 +21,17 @@ groq:
     # Roadmap agent — same quality tier as evaluators
     roadmap: llama-3.3-70b-versatile
 
+  # Stage 11 provider failover. On a hard (non-429) failure the client retries
+  # the role once on its fallback model, then — if allowed — degrades to the
+  # local mock so the session keeps going instead of dropping the candidate.
+  # Every step is logged as a `fallback_used` event.
+  failover_roles:
+    live_interviewer: gemma2-9b-it
+    indexer: gemma2-9b-it
+    evaluator: llama-3.1-8b-instant
+    roadmap: llama-3.1-8b-instant
+  failover_to_mock: true
+
 # Shared generation defaults (overridable per call)
 provider: groq                  # groq | mock
 max_tokens: 120
