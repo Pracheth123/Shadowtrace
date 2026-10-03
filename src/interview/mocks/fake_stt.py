@@ -44,7 +44,13 @@ from typing import Callable, TYPE_CHECKING
 if TYPE_CHECKING:
     from interview.events.bus import EventBus
 
-from interview.events.schema import FinalTranscript, Partial, SpeechStart, WordTiming
+from interview.events.schema import (
+    Endpoint,
+    FinalTranscript,
+    Partial,
+    SpeechStart,
+    WordTiming,
+)
 
 log = logging.getLogger(__name__)
 
@@ -78,6 +84,7 @@ class FakeStt:
         producer: str = "fake_stt",
         on_partial_text: Callable[[str], None] | None = None,
         on_silence: Callable[[float], None] | None = None,
+        emit_endpoint: bool = False,
     ) -> None:
         self._bus = bus
         self._path = Path(transcript_path)
@@ -85,6 +92,9 @@ class FakeStt:
         self._producer = producer
         self.on_partial_text = on_partial_text
         self.on_silence = on_silence
+        # Reason: stage-4 recorders need endpoint on the bus for waterfall totals
+        # without running the live turn detector.
+        self._emit_endpoint = emit_endpoint
 
     async def run(self, speed: float = 1.0) -> None:
         """
@@ -150,6 +160,17 @@ class FakeStt:
             await asyncio.sleep((remaining_ms / 1000.0) / speed)
 
         t_end = t_offset + end_ms / 1000.0
+
+        if self._emit_endpoint:
+            await self._bus.emit(
+                Endpoint(
+                    session_id=self._session_id,
+                    turn_id=turn_id,
+                    producer=self._producer,
+                    t_audio_in=t_end,
+                    confidence=0.92,
+                )
+            )
 
         # Emit final_transcript
         final_text = revisions[-1]["text"] if revisions else ""

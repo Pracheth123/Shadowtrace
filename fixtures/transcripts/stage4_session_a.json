@@ -1,0 +1,116 @@
+{
+  "description": "Stage 4 recorded session A — Kafka / reliability deep-dive (5 turns).",
+  "utterances": [
+    {
+      "id": "a1",
+      "duration_ms": 3800,
+      "gap_after_ms": 400,
+      "words": [
+        {"word": "I", "start_ms": 80, "end_ms": 120},
+        {"word": "built", "start_ms": 130, "end_ms": 200},
+        {"word": "a", "start_ms": 210, "end_ms": 230},
+        {"word": "Kafka", "start_ms": 240, "end_ms": 320},
+        {"word": "pipeline", "start_ms": 330, "end_ms": 420},
+        {"word": "for", "start_ms": 430, "end_ms": 460},
+        {"word": "payments", "start_ms": 470, "end_ms": 560},
+        {"word": "at", "start_ms": 570, "end_ms": 600},
+        {"word": "about", "start_ms": 610, "end_ms": 670},
+        {"word": "two", "start_ms": 680, "end_ms": 720},
+        {"word": "million", "start_ms": 730, "end_ms": 820},
+        {"word": "events", "start_ms": 830, "end_ms": 900},
+        {"word": "per", "start_ms": 910, "end_ms": 950},
+        {"word": "second", "start_ms": 960, "end_ms": 1040}
+      ],
+      "revisions": [
+        {"at_ms": 200, "text": "I built"},
+        {"at_ms": 450, "text": "I built a Kafka pipeline"},
+        {"at_ms": 800, "text": "I built a Kafka pipeline for payments at about two million"},
+        {"at_ms": 1040, "text": "I built a Kafka pipeline for payments at about two million events per second"}
+      ]
+    },
+    {
+      "id": "a2",
+      "duration_ms": 4200,
+      "gap_after_ms": 400,
+      "words": [
+        {"word": "Back-pressure", "start_ms": 100, "end_ms": 220},
+        {"word": "was", "start_ms": 230, "end_ms": 270},
+        {"word": "the", "start_ms": 280, "end_ms": 310},
+        {"word": "hard", "start_ms": 320, "end_ms": 370},
+        {"word": "part", "start_ms": 380, "end_ms": 430},
+        {"word": "we", "start_ms": 440, "end_ms": 470},
+        {"word": "throttled", "start_ms": 480, "end_ms": 580},
+        {"word": "producers", "start_ms": 590, "end_ms": 690},
+        {"word": "using", "start_ms": 700, "end_ms": 760},
+        {"word": "consumer", "start_ms": 770, "end_ms": 870},
+        {"word": "lag", "start_ms": 880, "end_ms": 930},
+        {"word": "metrics", "start_ms": 940, "end_ms": 1040}
+      ],
+      "revisions": [
+        {"at_ms": 250, "text": "Back-pressure was the hard part"},
+        {"at_ms": 700, "text": "Back-pressure was the hard part we throttled producers"},
+        {"at_ms": 1040, "text": "Back-pressure was the hard part we throttled producers using consumer lag metrics"}
+      ]
+    },
+    {
+      "id": "a3",
+      "duration_ms": 3600,
+      "gap_after_ms": 400,
+      "words": [
+        {"word": "We", "start_ms": 80, "end_ms": 120},
+        {"word": "aimed", "start_ms": 130, "end_ms": 200},
+        {"word": "for", "start_ms": 210, "end_ms": 240},
+        {"word": "99.95", "start_ms": 250, "end_ms": 340},
+        {"word": "percent", "start_ms": 350, "end_ms": 430},
+        {"word": "uptime", "start_ms": 440, "end_ms": 520},
+        {"word": "measured", "start_ms": 530, "end_ms": 620},
+        {"word": "in", "start_ms": 630, "end_ms": 660},
+        {"word": "Prometheus", "start_ms": 670, "end_ms": 800}
+      ],
+      "revisions": [
+        {"at_ms": 240, "text": "We aimed for 99.95"},
+        {"at_ms": 520, "text": "We aimed for 99.95 percent uptime"},
+        {"at_ms": 800, "text": "We aimed for 99.95 percent uptime measured in Prometheus"}
+      ]
+    },
+    {
+      "id": "a4",
+      "duration_ms": 4000,
+      "gap_after_ms": 400,
+      "words": [
+        {"word": "I", "start_ms": 80, "end_ms": 110},
+        {"word": "rolled", "start_ms": 120, "end_ms": 180},
+        {"word": "back", "start_ms": 190, "end_ms": 240},
+        {"word": "the", "start_ms": 250, "end_ms": 280},
+        {"word": "deploy", "start_ms": 290, "end_ms": 360},
+        {"word": "even", "start_ms": 370, "end_ms": 420},
+        {"word": "when", "start_ms": 430, "end_ms": 480},
+        {"word": "engineers", "start_ms": 490, "end_ms": 590},
+        {"word": "disagreed", "start_ms": 600, "end_ms": 700}
+      ],
+      "revisions": [
+        {"at_ms": 280, "text": "I rolled back the deploy"},
+        {"at_ms": 700, "text": "I rolled back the deploy even when engineers disagreed"}
+      ]
+    },
+    {
+      "id": "a5",
+      "duration_ms": 3500,
+      "gap_after_ms": 300,
+      "words": [
+        {"word": "I", "start_ms": 80, "end_ms": 110},
+        {"word": "wrote", "start_ms": 120, "end_ms": 180},
+        {"word": "a", "start_ms": 190, "end_ms": 210},
+        {"word": "blameless", "start_ms": 220, "end_ms": 320},
+        {"word": "post-mortem", "start_ms": 330, "end_ms": 450},
+        {"word": "the", "start_ms": 460, "end_ms": 490},
+        {"word": "next", "start_ms": 500, "end_ms": 550},
+        {"word": "day", "start_ms": 560, "end_ms": 620}
+      ],
+      "revisions": [
+        {"at_ms": 320, "text": "I wrote a blameless"},
+        {"at_ms": 620, "text": "I wrote a blameless post-mortem the next day"}
+      ]
+    }
+  ]
+}

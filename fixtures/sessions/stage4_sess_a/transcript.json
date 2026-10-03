@@ -1,0 +1,93 @@
+[
+  {
+    "speaker": "agent",
+    "turn_id": "turn-opener",
+    "text": "Thanks for joining. Let's start with a technical deep-dive \u2014 tell me about a challenging project you've led recently.",
+    "t_start": 0.00023559998953714967,
+    "t_end": 0.00046790001215413213,
+    "utterance_id": "87b7fcbb-7521-48d6-8ac9-93dc64a122db"
+  },
+  {
+    "speaker": "candidate",
+    "turn_id": "8d75a1ee-79d6-4917-ab13-6618eca22e5c",
+    "text": "I built a Kafka pipeline for payments at about two million events per second",
+    "t_start": 0.0031734000076539814,
+    "t_end": 1.04
+  },
+  {
+    "speaker": "candidate",
+    "turn_id": "014bb774-4273-4c59-9226-589e1d22462a",
+    "text": "Back-pressure was the hard part we throttled producers using consumer lag metrics",
+    "t_start": 0.003600600000936538,
+    "t_end": 2.48
+  },
+  {
+    "speaker": "candidate",
+    "turn_id": "224c36a9-1e48-4e70-8617-0ab2883f008d",
+    "text": "We aimed for 99.95 percent uptime measured in Prometheus",
+    "t_start": 0.0063319000182673335,
+    "t_end": 3.6799999999999997
+  },
+  {
+    "speaker": "candidate",
+    "turn_id": "037e3370-4fe0-40be-9ac0-894e335b98a3",
+    "text": "I rolled back the deploy even when engineers disagreed",
+    "t_start": 0.007086800003889948,
+    "t_end": 4.78
+  },
+  {
+    "speaker": "candidate",
+    "turn_id": "782945b5-119d-48fd-831e-8015261d426b",
+    "text": "I wrote a blameless post-mortem the next day",
+    "t_start": 0.00762879999820143,
+    "t_end": 5.800000000000001
+  },
+  {
+    "speaker": "agent",
+    "turn_id": "8d75a1ee-79d6-4917-ab13-6618eca22e5c",
+    "text": "That's a solid foundation. How did you handle back-pressure when the pipeline fell behind?",
+    "t_start": 0.22589800000423566,
+    "t_end": 0.22617430001264438,
+    "utterance_id": "89c4b43e-8a48-47d9-b523-646b897ace31"
+  },
+  {
+    "speaker": "agent",
+    "turn_id": "014bb774-4273-4c59-9226-589e1d22462a",
+    "text": "That's a solid foundation. How did you handle back-pressure when the pipeline fell behind?",
+    "t_start": 0.44204399996669963,
+    "t_end": 0.4422181000118144,
+    "utterance_id": "55b04cdc-7b9b-4f9d-b8c5-00b85b6d6a71"
+  },
+  {
+    "speaker": "agent",
+    "turn_id": "224c36a9-1e48-4e70-8617-0ab2883f008d",
+    "text": "That's a solid foundation. How did you handle back-pressure when the pipeline fell behind?",
+    "t_start": 0.4575710999779403,
+    "t_end": 0.4579232999822125,
+    "utterance_id": "50ebf4ca-e521-40da-8e89-f4ae9018ecbf"
+  },
+  {
+    "speaker": "agent",
+    "turn_id": "037e3370-4fe0-40be-9ac0-894e335b98a3",
+    "text": "That's a solid foundation. How did you handle back-pressure when the pipeline fell behind?",
+    "t_start": 0.4579560999991372,
+    "t_end": 0.45810220000566915,
+    "utterance_id": "e581efd0-0f7a-4560-916a-57a9cfa25fa3"
+  },
+  {
+    "speaker": "agent",
+    "turn_id": "782945b5-119d-48fd-831e-8015261d426b",
+    "text": "That's a solid foundation. How did you handle back-pressure when the pipeline fell behind?",
+    "t_start": 0.4581216999795288,
+    "t_end": 0.4582290999824181,
+    "utterance_id": "53600938-8701-4601-bf10-661644ce9b6b"
+  },
+  {
+    "speaker": "agent",
+    "turn_id": "turn-closer",
+    "text": "That's all the time we have. Thanks for walking me through your work \u2014 you'll get a feedback report shortly.",
+    "t_start": 0.45881260000169277,
+    "t_end": 0.4589064000174403,
+    "utterance_id": "d5b882ce-a64b-4950-8980-d52f7a9072bb"
+  }
+]

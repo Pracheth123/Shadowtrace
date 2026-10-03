@@ -9,7 +9,5 @@ Active work is tracked in [`TASK.md`](TASK.md). Stage briefs are in
 
 ## Current focus
 
-Stage 4 — Wire the live interviewer
-(`docs/stages/stage-04-lead-interviewer.md` / `claude files/stage-04-lead-interviewer.md`).
-
-Agentic architecture (tool-using live agent + guard) is documented; tools/guard land in stage 5.
+Stage 4 exit criterion met offline (three recorded sessions + waterfalls).  
+Next: Stage 5 — guard + spine/probe (`docs/stages/stage-05-planner-spine.md`).

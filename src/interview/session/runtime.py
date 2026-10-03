@@ -137,9 +137,23 @@ class LiveSession:
             await self.end(reason="limit")
             return
 
+        # Await prior reply so FakeStt / rapid finals cannot overlap generations.
+        if self._gen_task and not self._gen_task.done():
+            try:
+                await self._gen_task
+            except asyncio.CancelledError:
+                pass
+
         self._gen_task = asyncio.create_task(
             self._generate_reply(event.turn_id or str(uuid.uuid4()))
         )
+        # Reason: bus handlers are awaited; finishing the reply before the next
+        # final_transcript keeps turn timelines waterfall-clean. Barge-in still
+        # cancels via _gen_task.cancel().
+        try:
+            await self._gen_task
+        except asyncio.CancelledError:
+            pass
 
     async def _generate_reply(self, turn_id: str) -> None:
         utterance_id = str(uuid.uuid4())
@@ -250,11 +264,32 @@ class LiveSession:
         turn_id: str | None = None,
         t_audio_in: float | None = None,
     ) -> None:
-        """Test / mock helper: inject a candidate final_transcript onto the bus."""
-        from interview.events.schema import FinalTranscript
+        """Test / mock helper: inject endpoint + final_transcript onto the bus."""
+        from interview.events.schema import Endpoint, FinalTranscript, Partial
 
         tid = turn_id or str(uuid.uuid4())
         t = t_audio_in if t_audio_in is not None else (time.monotonic() - self._started_at)
+        # Minimal partial so waterfall has last_partial → endpoint
+        await self.bus.emit(
+            Partial(
+                session_id=self.session_id,
+                turn_id=tid,
+                producer="runtime_ingest",
+                t_audio_in=max(0.0, t - 0.15),
+                text=text,
+                stable_until_ms=int(max(0.0, t - 0.15) * 1000),
+                revision=0,
+            )
+        )
+        await self.bus.emit(
+            Endpoint(
+                session_id=self.session_id,
+                turn_id=tid,
+                producer="runtime_ingest",
+                t_audio_in=t,
+                confidence=0.9,
+            )
+        )
         await self.bus.emit(
             FinalTranscript(
                 session_id=self.session_id,

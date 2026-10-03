@@ -10,10 +10,13 @@ Run:
 Env:
     SESSION_LOG_DIR   default logs/
     MOCK_LLM=1        use FakeLlm path (default on)
+    FAKE_STT_PATH     if set, replay this transcript fixture after session_start
+                      (composes FakeStt from transport/mocks onto the bus)
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import uuid
@@ -26,6 +29,7 @@ from fastapi.responses import JSONResponse
 from interview.events.bus import EventBus
 from interview.events.log import EventLogger
 from interview.events.schema import BargeIn, PlaybackAck, Truncate
+from interview.mocks.fake_stt import FakeStt
 from interview.session.runtime import LiveSession, SessionConfig
 from interview.session.speak import FakeSpeakPort
 
@@ -128,6 +132,23 @@ async def ws_session(websocket: WebSocket):
                     if not started:
                         started = True
                         await live.start()
+                        fake_stt = os.environ.get("FAKE_STT_PATH", "").strip()
+                        if fake_stt:
+                            stt_path = Path(fake_stt)
+                            if stt_path.exists():
+
+                                async def _run_fake_stt() -> None:
+                                    stt = FakeStt(
+                                        bus,
+                                        stt_path,
+                                        session_id,
+                                        emit_endpoint=True,
+                                    )
+                                    await stt.run(speed=0.0)
+                                    await live.wait_idle()
+                                    await live.end(reason="limit")
+
+                                asyncio.create_task(_run_fake_stt())
                 elif mtype == "playback_ack":
                     last_played_ms = int(msg.get("played_ms", last_played_ms))
                     current_utt = msg.get("utterance_id", current_utt)

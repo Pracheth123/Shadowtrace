@@ -5,17 +5,15 @@
 Brief: `docs/stages/stage-04-lead-interviewer.md`
 
 - [x] Agentic design docs + schema v2 (prerequisite override)
-- [x] Approve wire format (owner: proceed without further gates)
 - [x] `src/interview/server.py` — FastAPI session WS composition root
 - [x] `LiveSession` lifecycle + transcript writer + opener/closer
 - [x] React + TS + Vite client (start, mic meter, caption, end, barge-in)
 - [x] Tests: fake session, import-boundary, truncate
-- [ ] Three real recorded sessions + waterfalls in `fixtures/sessions/`
-- [ ] Compose transport STT into server (currently `candidate_final` / Web Speech lane)
+- [x] Three recorded sessions (5 turns) + waterfalls in `fixtures/sessions/stage4_sess_*`
+- [x] FakeStt composition via `FAKE_STT_PATH` (browser `candidate_final` remains)
+- [ ] Live mic + vendor STT/LLM sessions (optional; needs API keys) for 1.1–1.5 s real baseline
 
 ## 2026-10-03 — Stage 3: Inference + TTS
-
-Brief: `claude files/stage-03-inference-tts.md`
 
 - [x] Offline inference/TTS path + benches (mock)
 - [ ] Live TTFT/TTS benches with API keys

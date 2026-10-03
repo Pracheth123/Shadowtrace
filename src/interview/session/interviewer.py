@@ -156,6 +156,9 @@ class LeadInterviewer:
         elif self._provider == "google":
             async for token in self._stream_google(messages):
                 yield token
+        elif self._provider in ("mock", "fake"):
+            async for token in self._stream_mock(messages):
+                yield token
         else:
             # Mock fallback so the rest of the system is testable without an API key
             log.warning("Unknown provider '%s'; using mock LLM", self._provider)
