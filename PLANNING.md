@@ -9,5 +9,5 @@ Active work is tracked in [`TASK.md`](TASK.md). Stage briefs are in
 
 ## Current focus
 
-Stage 8 evaluation runs offline from a transcript, the event log, and a claims file. Reports for the stage-4 recordings and two hand-written transcripts finished in under 0.002 s. A negated Kafka claim collapses.  
-Next: Stage 9 — roadmap agent, longitudinal store, and dashboard.
+Stage 9 stores session scores in SQLite and plans the next practice from one pack at a time. Four seeded `behavioral-core` sessions show technical rising from 0.25 to 0.80. The React dashboard is at `#dashboard`.  
+Next: Stage 10 — intensity toggle and confidence guardrail.

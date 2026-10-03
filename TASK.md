@@ -1,5 +1,16 @@
 # Tasks
 
+## 2026-10-03 — Stage 9: Roadmap, public pack, dashboard
+
+Brief: `docs/stages/stage-09-roadmap-pack-dashboard.md`
+
+- [x] SQLite longitudinal store, append-only write path
+- [x] Trends compare sessions of one pack only
+- [x] Roadmap agent: list sessions, scores, claim history, gaps; 3–5 prep items with evidence
+- [x] `public-company` pack from public themes, original spine text
+- [x] React dashboard at `#dashboard`, first card from `fake_eval`
+- [x] Seed of 4 sessions, trend, and roadmap in `docs/decisions/stage9_store.md`
+
 ## 2026-10-03 — Stage 8: Evaluation pass
 
 Brief: `docs/stages/stage-08-evaluation-pass.md`

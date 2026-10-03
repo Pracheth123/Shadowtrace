@@ -1,0 +1,98 @@
+[
+  {
+    "started_at": "2026-09-01T10:00:00Z",
+    "session_id": "ada-1",
+    "dimension": "competency",
+    "score": 0.3
+  },
+  {
+    "started_at": "2026-09-01T10:00:00Z",
+    "session_id": "ada-1",
+    "dimension": "delivery",
+    "score": 0.5
+  },
+  {
+    "started_at": "2026-09-01T10:00:00Z",
+    "session_id": "ada-1",
+    "dimension": "structure",
+    "score": 0.4
+  },
+  {
+    "started_at": "2026-09-01T10:00:00Z",
+    "session_id": "ada-1",
+    "dimension": "technical",
+    "score": 0.25
+  },
+  {
+    "started_at": "2026-09-08T10:00:00Z",
+    "session_id": "ada-2",
+    "dimension": "competency",
+    "score": 0.4
+  },
+  {
+    "started_at": "2026-09-08T10:00:00Z",
+    "session_id": "ada-2",
+    "dimension": "delivery",
+    "score": 0.55
+  },
+  {
+    "started_at": "2026-09-08T10:00:00Z",
+    "session_id": "ada-2",
+    "dimension": "structure",
+    "score": 0.45
+  },
+  {
+    "started_at": "2026-09-08T10:00:00Z",
+    "session_id": "ada-2",
+    "dimension": "technical",
+    "score": 0.4
+  },
+  {
+    "started_at": "2026-09-15T10:00:00Z",
+    "session_id": "ada-3",
+    "dimension": "competency",
+    "score": 0.6
+  },
+  {
+    "started_at": "2026-09-15T10:00:00Z",
+    "session_id": "ada-3",
+    "dimension": "delivery",
+    "score": 0.5
+  },
+  {
+    "started_at": "2026-09-15T10:00:00Z",
+    "session_id": "ada-3",
+    "dimension": "structure",
+    "score": 0.55
+  },
+  {
+    "started_at": "2026-09-15T10:00:00Z",
+    "session_id": "ada-3",
+    "dimension": "technical",
+    "score": 0.6
+  },
+  {
+    "started_at": "2026-09-22T10:00:00Z",
+    "session_id": "ada-4",
+    "dimension": "competency",
+    "score": 0.75
+  },
+  {
+    "started_at": "2026-09-22T10:00:00Z",
+    "session_id": "ada-4",
+    "dimension": "delivery",
+    "score": 0.65
+  },
+  {
+    "started_at": "2026-09-22T10:00:00Z",
+    "session_id": "ada-4",
+    "dimension": "structure",
+    "score": 0.7
+  },
+  {
+    "started_at": "2026-09-22T10:00:00Z",
+    "session_id": "ada-4",
+    "dimension": "technical",
+    "score": 0.8
+  }
+]

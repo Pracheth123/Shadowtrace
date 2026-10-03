@@ -1,0 +1,36 @@
+# Spine written for this pack. The competencies are public interview themes
+# (customer, ownership, judgment). This is not a copied question bank.
+pack_id: public-company
+title: Public company loop
+time_budget_s: 900
+spine:
+  - id: customer-impact
+    text: "Tell me about a change you shipped that a customer could notice."
+    competency: customer
+  - id: owned-launch
+    text: "Tell me about a launch you owned when the plan slipped."
+    competency: ownership
+  - id: tradeoff
+    text: "Tell me about a tradeoff you made with incomplete data."
+    competency: judgment
+  - id: wrote-it-down
+    text: "Tell me about a decision you wrote down so the next person could follow it."
+    competency: communication
+competencies:
+  - id: customer
+    label: Customer
+  - id: ownership
+    label: Ownership
+  - id: judgment
+    label: Judgment
+  - id: communication
+    label: Communication
+probe_policy:
+  max_depth: 2
+  seconds_per_spine: 90
+  min_probe_s: 45
+scoring_weights:
+  technical: 0.25
+  structure: 0.25
+  delivery: 0.25
+  competency: 0.25
