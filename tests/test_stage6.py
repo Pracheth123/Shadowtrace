@@ -27,7 +27,14 @@ from interview.intake.repo_indexer import (
     TraceLog,
     shallow_clone,
 )
-from interview.intake.resume_parser import extract_pdf_text, parse_resume, parse_resume_file
+from interview.intake.resume_parser import (
+    ResumeExtractionError,
+    extract_pdf,
+    extract_pdf_text,
+    load_resume_text,
+    parse_resume,
+    parse_resume_file,
+)
 from interview.intake.schema import IntakeRequest, ResumeProfile
 from interview.session.tools import load_claims_fixture
 
@@ -51,9 +58,82 @@ def test_resume_parser_sections_and_sanitize() -> None:
     assert "ignore previous instructions" not in dumped.casefold()
 
 
-def test_pdf_text_joins_literals() -> None:
-    payload = b"%PDF-1.4\nBT (Ada Lovelace) Tj ET\n"
-    assert "Ada Lovelace" in extract_pdf_text(payload)
+def test_real_pdf_round_trips_through_pypdf(tmp_path: Path) -> None:
+    """
+    Extraction is verified against a genuine PDF, not a hand-made fragment.
+
+    The previous test asserted the old regex behaviour over an invalid snippet
+    with no xref table. Passing it proved only that a regex matched bytes, while
+    every real FlateDecode resume extracted to "" and was accepted as a blank
+    profile. This writes a structurally valid PDF with the app's own writer and
+    reads it back.
+    """
+    from interview.evaluation.report import write_transcript_pdf
+    from interview.evaluation.schema import Turn
+
+    pdf = tmp_path / "resume.pdf"
+    write_transcript_pdf(
+        [
+            Turn(turn_id="t1", speaker="candidate", text="Ada Lovelace"),
+            Turn(turn_id="t2", speaker="candidate", text="Skills: Flask, PostgreSQL"),
+        ],
+        pdf,
+    )
+    extraction = extract_pdf(pdf.read_bytes())
+    assert "Ada Lovelace" in extraction.text
+    assert "Flask" in extraction.text
+    assert extraction.pages >= 1
+    assert extraction.image_only is False
+    assert extract_pdf_text(pdf.read_bytes()) == extraction.text
+
+    text, truncated = load_resume_text(pdf)
+    assert "Ada Lovelace" in text
+    assert truncated is False
+
+
+def test_scanned_pdf_is_refused_with_a_recovery_path(tmp_path: Path) -> None:
+    """
+    A text-free PDF must not become an empty profile.
+
+    An empty profile yields an interview with no claims to interrogate, which
+    still looks like a successful session — the failure most likely to pass
+    unnoticed.
+    """
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    writer.add_blank_page(width=612, height=792)
+    scanned = tmp_path / "scan.pdf"
+    with scanned.open("wb") as handle:
+        writer.write(handle)
+
+    assert extract_pdf(scanned.read_bytes()).image_only is True
+    with pytest.raises(ResumeExtractionError) as caught:
+        load_resume_text(scanned)
+    assert "scan" in str(caught.value).casefold()
+    # Tells the candidate what to do, and does not promise OCR we do not run.
+    assert "OCR" in caught.value.recovery or "plain text" in caught.value.recovery
+
+
+def test_corrupt_pdf_and_empty_text_are_distinct_failures(tmp_path: Path) -> None:
+    broken = tmp_path / "broken.pdf"
+    broken.write_bytes(b"%PDF-1.4 not really a pdf at all")
+    with pytest.raises(ResumeExtractionError) as caught:
+        load_resume_text(broken)
+    assert "re-export" in caught.value.recovery.casefold()
+
+    blank = tmp_path / "blank.txt"
+    blank.write_text("    \n \n", encoding="utf-8")
+    with pytest.raises(ResumeExtractionError) as caught:
+        load_resume_text(blank)
+    assert "no readable text" in str(caught.value).casefold()
+
+
+def test_plain_text_resume_still_loads(tmp_path: Path) -> None:
+    txt = tmp_path / "resume.txt"
+    txt.write_text("Ada Lovelace\nada@example.com\n", encoding="utf-8")
+    text, truncated = load_resume_text(txt)
+    assert "Ada Lovelace" in text and truncated is False
 
 
 def test_indexer_rejects_code_execution(tmp_path: Path) -> None:

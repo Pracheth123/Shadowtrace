@@ -1,5 +1,54 @@
 # Tasks
 
+## 2026-10-04 — Stage 12: real voice providers (Deepgram) — PARTIAL
+
+Evidence: `docs/decisions/stage12_voice_providers.md`
+
+Done and verified offline (177 passed, 1 skipped):
+
+- [x] Provider contracts verified against official docs before coding. Seven
+      prior assumptions were wrong — see the table in the decision doc.
+- [x] `src/interview/config.py` — one validated settings object. Secrets are
+      `SecretStr`; retired models, non-PCM encodings, non-Aura voices and
+      `APP_ENV=prod` + mocks all fail at startup.
+- [x] Retired `gemma2-9b-it`; fallbacks are `openai/gpt-oss-20b` / `-120b`.
+- [x] `src/interview/transport/audio.py` — stateful PCM conversion/resampling
+      that is correct across chunk seams (verified spectrally).
+- [x] `src/interview/transport/deepgram_stt.py` — `/v1/listen` over websockets:
+      `keyterm` (not `keywords`), explicit format declaration, `vad_events`,
+      keepalive, and **exactly one answer per turn** from buffered `is_final`
+      segments closed by `speech_final` / `UtteranceEnd` / client finalise.
+- [x] `src/interview/transport/deepgram_tts.py` — `/v1/speak` over websockets:
+      sentence-wise `Speak`, one `Flush` per line under the documented 20/min
+      limit, `Clear` + late-chunk rejection, per-persona Aura-2 voices, and
+      word timings honestly marked estimated.
+- [x] Additive schema fields: transcript `confidence`, turn `boundary`,
+      `timings_estimated`, TTS `sample_rate`/`encoding`, ack `scheduled_ms`.
+      Stage-1 replay fidelity still passes.
+- [x] `pypdf` replaces the regex PDF extractor, which returned empty text for
+      every compressed (i.e. normal) PDF and silently accepted a blank profile.
+      Scanned, encrypted and corrupt PDFs now fail with distinct recovery paths.
+- [x] Removed the unused `deepgram-sdk` dependency — it was declared but never
+      installed, and the adapter caught `ImportError` and ran as a no-op.
+- [x] `.env.example` rewritten: every variable, placeholders only.
+
+Not done — do not read the above as a working voice interview:
+
+- [ ] Wire the adapters into `server.py` (still injects `FakeSpeakPort`) and
+      browser mic capture into the authenticated session socket.
+- [ ] Client playback accounting from the audio clock; queue teardown on
+      barge-in; populate `scheduled_ms`. The schema field exists; nothing
+      writes it.
+- [ ] Push-to-talk must gate capture/transcription, not just interruption.
+- [ ] Authentication, ownership checks, persistence, post-session evaluation
+      runner, real dashboard APIs (items 1, 7, 9).
+- [ ] Model-driven interviewer follow-ups through the guard (item 4).
+- [ ] Rubric-based evaluation replacing the support-count ratio (item 6).
+- [ ] Language-aware repository exploration beyond README/Python (item 5).
+- [ ] **All live validation.** No `DEEPGRAM_API_KEY` or `GROQ_API_KEY` in this
+      environment. No latency measurement has been taken; the ~450 ms target
+      remains unverified and the existing waterfall numbers are mock-path only.
+
 ## 2026-10-04 — Stage 11: Panel mode, hardening and lanes
 
 Brief: `docs/stages/stage-11-panel-hardening-lanes.md`

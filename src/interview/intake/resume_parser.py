@@ -13,7 +13,9 @@ are read with rules so a resume cannot instruct the parser.
 
 from __future__ import annotations
 
+import io
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 from interview.intake.sanitize import sanitize_text
@@ -47,40 +49,131 @@ def collapse_ws(text: str) -> str:
     return "\n".join(lines).strip()
 
 
-def extract_pdf_text(data: bytes) -> str:
-    """
-    Pull literal strings from a simple text PDF.
+@dataclass(frozen=True)
+class PdfExtraction:
+    """What extraction actually achieved, so callers need not guess."""
 
-    skill-sync uses PDF.js in the browser. This is the server-side subset:
-    page content strings, joined, whitespace collapsed. Compressed streams
-    are left for a pre-extracted .txt file.
+    text: str
+    pages: int
+    pages_with_text: int
+    # True when the file parses as a PDF but carries essentially no text layer:
+    # a scan or an exported image. The recovery path differs completely from a
+    # corrupt file, so the two are not collapsed into one error.
+    image_only: bool
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.text.strip()
+
+
+class ResumeExtractionError(ValueError):
     """
-    parts: list[str] = []
-    for match in re.finditer(rb"\((?:\\.|[^\\)])*\)\s*Tj", data):
-        raw = match.group(0)
-        inner = raw[: raw.rfind(b")")]
-        inner = inner[1:]
-        text = (
-            inner.replace(b"\\n", b"\n")
-            .replace(b"\\r", b"\r")
-            .replace(b"\\(", b"(")
-            .replace(b"\\)", b")")
-            .replace(b"\\\\", b"\\")
-        )
+    Extraction produced nothing usable.
+
+    Raised rather than returning "" because an empty profile silently becomes an
+    interview with no claims to interrogate — which looks like a working session
+    and is the failure most likely to go unnoticed. `recovery` is written for
+    the candidate, not the log.
+    """
+
+    def __init__(self, message: str, *, recovery: str) -> None:
+        super().__init__(message)
+        self.recovery = recovery
+
+
+# A text-bearing page yields far more than this. Below it, across every page,
+# the file is a scan rather than a document with a thin text layer.
+_MIN_CHARS_PER_PAGE = 24
+
+
+def extract_pdf(data: bytes) -> PdfExtraction:
+    """
+    Extract text with pypdf.
+
+    Replaces a hand-rolled regex over `(...) Tj` operators. That only ever
+    matched *uncompressed* content streams, so an ordinary FlateDecode PDF — in
+    practice almost every real resume — extracted to the empty string and was
+    accepted as a valid, blank profile.
+    """
+    from pypdf import PdfReader
+    from pypdf.errors import PdfReadError
+
+    try:
+        reader = PdfReader(io.BytesIO(data))
+    except (PdfReadError, OSError, ValueError) as exc:
+        raise ResumeExtractionError(
+            f"This PDF could not be opened: {exc}",
+            recovery="Re-export the file from your editor, or upload a .txt copy.",
+        ) from exc
+
+    # An encrypted file is a distinct, fixable situation. Empty-password
+    # decryption covers the common "protected but not really" export.
+    if reader.is_encrypted:
         try:
-            parts.append(text.decode("utf-8"))
-        except UnicodeDecodeError:
-            parts.append(text.decode("latin-1", errors="ignore"))
-    return collapse_ws(" ".join(parts))
+            reader.decrypt("")
+        except Exception as exc:  # noqa: BLE001
+            raise ResumeExtractionError(
+                "This PDF is password protected.",
+                recovery="Upload an unprotected copy, or paste the text instead.",
+            ) from exc
+
+    pages: list[str] = []
+    for page in reader.pages:
+        try:
+            pages.append(page.extract_text() or "")
+        except Exception:  # noqa: BLE001 — one bad page must not lose the rest
+            pages.append("")
+
+    joined = collapse_ws("\n".join(pages))
+    with_text = sum(1 for page in pages if len(page.strip()) >= _MIN_CHARS_PER_PAGE)
+    page_count = len(pages) or 1
+    image_only = len(joined.strip()) < _MIN_CHARS_PER_PAGE * page_count
+
+    return PdfExtraction(
+        text=joined,
+        pages=len(pages),
+        pages_with_text=with_text,
+        image_only=image_only,
+    )
+
+
+def extract_pdf_text(data: bytes) -> str:
+    """Text only. Kept for callers that do not need the diagnostics."""
+    return extract_pdf(data).text
 
 
 def load_resume_text(path: Path) -> tuple[str, bool]:
+    """
+    Read a resume as text, refusing to return an empty profile quietly.
+
+    PDFs go through pypdf; anything else is decoded as UTF-8. A scanned PDF and
+    a corrupt PDF raise `ResumeExtractionError` with different recovery advice,
+    because "re-export it" and "this needs OCR" are not the same instruction.
+    """
     raw = path.read_bytes()
-    if raw.startswith(b"%PDF"):
-        text = extract_pdf_text(raw)
+    if raw[:5] == b"%PDF-" or raw[:4] == b"%PDF":
+        extraction = extract_pdf(raw)
+        if extraction.image_only or extraction.is_empty:
+            raise ResumeExtractionError(
+                f"No text could be read from this PDF "
+                f"({extraction.pages_with_text} of {extraction.pages} pages had text). "
+                "It looks like a scan or an image export.",
+                recovery=(
+                    "Upload a PDF exported from a word processor rather than a "
+                    "scan, or paste your resume as plain text. This build does "
+                    "not run OCR."
+                ),
+            )
+        text = extraction.text
     else:
-        text = raw.decode("utf-8", errors="replace")
-        text = collapse_ws(text)
+        decoded = raw.decode("utf-8", errors="replace")
+        text = collapse_ws(decoded)
+        if not text.strip():
+            raise ResumeExtractionError(
+                "This file contained no readable text.",
+                recovery="Check the file is not empty, then upload it again.",
+            )
+
     truncated = len(text) > RESUME_CHAR_LIMIT
     if truncated:
         text = text[:RESUME_CHAR_LIMIT]
