@@ -59,7 +59,7 @@ def _use_mock_llm() -> bool:
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "stage": 7}
+    return {"status": "ok", "stage": 8}
 
 
 @app.websocket("/ws/session")
@@ -227,7 +227,7 @@ async def root():
     return JSONResponse(
         {
             "service": "shadowtrace",
-            "stage": 7,
+            "stage": 8,
             "ws": "/ws/session",
             "client": "Run the Vite app in client/ and point WS to this server.",
         }

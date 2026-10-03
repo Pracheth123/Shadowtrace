@@ -9,5 +9,5 @@ Active work is tracked in [`TASK.md`](TASK.md). Stage briefs are in
 
 ## Current focus
 
-Stage 7 exit path is in place on the mock stack (signals, turn controller, speculative draft, router). Recorded p50 is 0.2 ms because the draft is ready before endpoint; stale-draft rate on that session is 0.20. The ~450 ms / ~1.0 s figures are the live-vendor budget and are not measured here.  
-Next: Stage 8 — evaluation agents. Do not start them until a new stage brief is executed.
+Stage 8 evaluation runs offline from a transcript, the event log, and a claims file. Reports for the stage-4 recordings and two hand-written transcripts finished in under 0.002 s. A negated Kafka claim collapses.  
+Next: Stage 9 — roadmap agent, longitudinal store, and dashboard.

@@ -1,0 +1,99 @@
+{
+  "session_id": "stage4_sess_b",
+  "claims": [
+    {
+      "id": "c-kafka",
+      "status": "untested",
+      "quote": "",
+      "turn_id": null
+    },
+    {
+      "id": "c-rollback",
+      "status": "held",
+      "quote": "Canaries at five percent auto rollback on errors",
+      "turn_id": "051532b1-b37e-424b-b971-b11fa86499a5"
+    }
+  ],
+  "findings": [
+    {
+      "agent": "substance",
+      "dimension": "technical",
+      "summary": "The answer names a decision or a measurement.",
+      "quote": "That's a solid foundation. How did you handle back-pressure when the pipeline fell behind?",
+      "turn_id": "a4958276-a5e8-4972-acf0-4b6e97fdfa3f",
+      "polarity": "support"
+    },
+    {
+      "agent": "structure",
+      "dimension": "structure",
+      "summary": "The answer has more than one step.",
+      "quote": "That's a solid foundation. How did you handle back-pressure when the pipeline fell behind?",
+      "turn_id": "ed09c998-4108-4323-bce2-41ad5b2742c5",
+      "polarity": "support"
+    },
+    {
+      "agent": "structure",
+      "dimension": "structure",
+      "summary": "The answer has more than one step.",
+      "quote": "That's a solid foundation. How did you handle back-pressure when the pipeline fell behind?",
+      "turn_id": "a4958276-a5e8-4972-acf0-4b6e97fdfa3f",
+      "polarity": "support"
+    },
+    {
+      "agent": "structure",
+      "dimension": "structure",
+      "summary": "The answer has more than one step.",
+      "quote": "That's a solid foundation. How did you handle back-pressure when the pipeline fell behind?",
+      "turn_id": "179dcdcb-5404-4cc7-ad75-d79c8e8398a1",
+      "polarity": "support"
+    },
+    {
+      "agent": "structure",
+      "dimension": "structure",
+      "summary": "The answer has more than one step.",
+      "quote": "That's a solid foundation. How did you handle back-pressure when the pipeline fell behind?",
+      "turn_id": "051532b1-b37e-424b-b971-b11fa86499a5",
+      "polarity": "support"
+    },
+    {
+      "agent": "structure",
+      "dimension": "structure",
+      "summary": "The answer has more than one step.",
+      "quote": "That's a solid foundation. How did you handle back-pressure when the pipeline fell behind?",
+      "turn_id": "d5d6408b-438f-4007-ac1e-fc2b7d42425f",
+      "polarity": "support"
+    },
+    {
+      "agent": "delivery",
+      "dimension": "delivery",
+      "summary": "The first answer is the delivery baseline for this session.",
+      "quote": "That's a solid foundation. How did you handle back-pressure when the pipeline fell behind?",
+      "turn_id": "ed09c998-4108-4323-bce2-41ad5b2742c5",
+      "polarity": "support"
+    }
+  ],
+  "dimensions": [
+    {
+      "dimension": "technical",
+      "score": 1.0,
+      "finding_count": 1
+    },
+    {
+      "dimension": "structure",
+      "score": 1.0,
+      "finding_count": 5
+    },
+    {
+      "dimension": "delivery",
+      "score": 1.0,
+      "finding_count": 1
+    },
+    {
+      "dimension": "competency",
+      "score": 0.5,
+      "finding_count": 0
+    }
+  ],
+  "elapsed_s": 0.0017,
+  "transcript_pdf": "transcript.pdf"
+}

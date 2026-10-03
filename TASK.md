@@ -1,5 +1,18 @@
 # Tasks
 
+## 2026-10-03 — Stage 8: Evaluation pass
+
+Brief: `docs/stages/stage-08-evaluation-pass.md`
+
+- [x] Offline pipeline: transcript, event log, claims file; resume/repo text only as delimited data
+- [x] Pattern detectors with no model call
+- [x] Three evaluator agents (substance, structure, delivery) with lookup tools and an eval trace file
+- [x] Claim adjudication with a negation check (`held` / `collapsed` / `untested`)
+- [x] Scorer reads findings only
+- [x] Report JSON + HTML, `fake_eval`, CLI `tools/evaluate.py`
+- [x] Transcript PDF linked from the report, written without a new library
+- [x] Stage-4 recordings and two hand-written transcripts in `docs/decisions/stage8_evaluation.md`
+
 ## 2026-10-03 — Stage 7: Signal bus, turn controller, speculative loop
 
 Brief: `docs/stages/stage-07-signal-bus-turn-controller.md`
