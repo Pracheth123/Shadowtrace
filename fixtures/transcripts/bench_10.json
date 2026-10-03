@@ -1,0 +1,5 @@
+{
+  "id": "bench-10",
+  "words": 45,
+  "text": "We had canary deployments set at 5 percent of traffic for 30 minutes before promoting to full rollout. The canary would auto-rollback if error rate exceeded 1 percent or P99 latency jumped by more than 50 percent."
+}

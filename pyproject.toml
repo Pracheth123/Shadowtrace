@@ -18,6 +18,8 @@ dependencies = [
     "deepgram-sdk>=3.0",       # STT vendor 1, streaming WebSocket + keyword boost
     "websockets>=12.0",        # low-level WS; deepgram SDK and session plumbing both need it
     "numpy>=1.26",             # RMS energy for VAD; pure-Python audio math without native exts
+    # Stage 3 — inference + TTS (optional at runtime when provider/vendor == mock)
+    "openai>=1.40",            # AsyncOpenAI chat streaming + audio.speech TTS
 ]
 
 [tool.setuptools.packages.find]

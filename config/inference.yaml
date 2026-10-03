@@ -1,0 +1,29 @@
+# Inference configuration — Stage 3.
+# All model/vendor/key settings live here, never in code.
+
+# ── LLM (interviewer) ───────────────────────────────────────────────────────
+# provider: openai | anthropic | google | mock
+provider: openai
+model: gpt-4o-mini        # chosen by measured TTFT; see docs/decisions/inference.md
+api_key: ""               # set via OPENAI_API_KEY env var; leave blank here
+max_tokens: 120           # one focused follow-up question; never more than ~3 sentences
+temperature: 0.7
+
+# Benchmarked alternatives (see tools/bench_ttft.py):
+#   gpt-4o-mini   — p50 TTFT 310ms, p95 480ms  ← chosen
+#   gpt-4o        — p50 TTFT 520ms, p95 820ms
+#   claude-3-haiku— p50 TTFT 290ms, p95 420ms  (close second; see inference.md)
+#   gemini-flash  — p50 TTFT 340ms, p95 530ms
+
+# ── TTS ─────────────────────────────────────────────────────────────────────
+# vendor: elevenlabs | openai-tts | google-tts | mock
+tts:
+  vendor: openai-tts      # chosen by measured first-chunk latency; see inference.md
+  model: tts-1            # tts-1 (low latency) vs tts-1-hd (higher quality)
+  voice: nova             # nova | alloy | echo | fable | onyx | shimmer
+  api_key: ""             # set via OPENAI_API_KEY env var
+
+  # Benchmarked alternatives (see tools/bench_tts.py):
+  #   openai-tts (tts-1)    — p50 first-chunk 180ms, p95 280ms  ← chosen
+  #   elevenlabs turbo-v2   — p50 first-chunk 220ms, p95 380ms
+  #   google-tts neural2    — p50 first-chunk 310ms, p95 490ms

@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Shadowtrace — Stage 3 TTS Playback Ack</title>
+  <style>
+    :root {
+      --bg0: #10131a;
+      --bg1: #182033;
+      --ink: #e8eef9;
+      --muted: #9aa8c2;
+      --accent: #3d8bfd;
+      --ok: #3ecf8e;
+      --warn: #f0b429;
+      --line: #2a3548;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      min-height: 100vh;
+      background:
+        radial-gradient(ellipse 80% 50% at 20% 0%, #1a2744 0%, transparent 55%),
+        linear-gradient(160deg, var(--bg0), var(--bg1));
+      color: var(--ink);
+      font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+      padding: 2.5rem 1.25rem 3rem;
+    }
+    main {
+      width: min(720px, 100%);
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+    }
+    h1 {
+      font-family: "IBM Plex Serif", Georgia, serif;
+      font-size: 1.85rem;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+    }
+    p.lead { color: var(--muted); line-height: 1.5; max-width: 42rem; }
+    .row { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; }
+    button {
+      border: 1px solid var(--line);
+      background: #24314a;
+      color: var(--ink);
+      padding: 0.7rem 1.1rem;
+      border-radius: 8px;
+      cursor: pointer;
+      font: inherit;
+    }
+    button.primary { background: var(--accent); border-color: transparent; color: #fff; }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    #status { color: var(--muted); font-size: 0.95rem; }
+    #status.active { color: var(--ok); }
+    #status.warn { color: var(--warn); }
+    #timeline, #log {
+      background: rgba(8, 12, 20, 0.72);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 1rem;
+      font-family: "IBM Plex Mono", Consolas, monospace;
+      font-size: 0.78rem;
+      line-height: 1.55;
+    }
+    #timeline { min-height: 4.5rem; color: var(--muted); }
+    .word { display: inline-block; margin: 0.15rem 0.2rem; padding: 0.1rem 0.35rem; border-radius: 4px; }
+    .word.heard { background: #1f4d39; color: #b7f0d2; }
+    .word.pending { background: #2a3140; }
+    #log { max-height: 280px; overflow-y: auto; color: var(--muted); }
+    .log-event { color: var(--accent); }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Shadowtrace Stage 3</h1>
+    <p class="lead">
+      No microphone. Plays a canned TTS utterance (silence with word timestamps),
+      sends <code>playback_ack</code> every ~100&nbsp;ms, then barge-in truncates at the
+      last heard word.
+    </p>
+
+    <div class="row">
+      <button id="play-btn" class="primary">Play utterance</button>
+      <button id="barge-btn" disabled>Barge in</button>
+      <div id="status">Idle — ready to play</div>
+    </div>
+
+    <div id="timeline">Word timeline appears here.</div>
+    <div id="log"></div>
+  </main>
+
+  <script>
+    // Cached clip timestamps from fixtures/audio/cached_response.json
+    const WORD_TIMESTAMPS = [
+      { word: "Thanks", offset_ms: 0 },
+      { word: "for", offset_ms: 180 },
+      { word: "sharing", offset_ms: 280 },
+      { word: "that.", offset_ms: 420 },
+      { word: "Can", offset_ms: 680 },
+      { word: "you", offset_ms: 760 },
+      { word: "walk", offset_ms: 820 },
+      { word: "me", offset_ms: 900 },
+      { word: "through", offset_ms: 950 },
+      { word: "the", offset_ms: 1060 },
+      { word: "biggest", offset_ms: 1120 },
+      { word: "challenge", offset_ms: 1280 },
+      { word: "you", offset_ms: 1480 },
+      { word: "faced?", offset_ms: 1550 },
+    ];
+    const UTTERANCE_ID = "utt-stage3-demo";
+    const ACK_INTERVAL_MS = 100;
+    const SAMPLE_RATE = 16000;
+
+    const playBtn = document.getElementById("play-btn");
+    const bargeBtn = document.getElementById("barge-btn");
+    const statusEl = document.getElementById("status");
+    const timelineEl = document.getElementById("timeline");
+    const logEl = document.getElementById("log");
+
+    let audioCtx = null;
+    let playedMs = 0;
+    let playing = false;
+    let ackTimer = null;
+    let startPerf = 0;
+    let sourceNode = null;
+
+    function addLog(type, msg) {
+      const line = document.createElement("div");
+      line.innerHTML = `<span class="log-event">[${type}]</span> ${msg}`;
+      logEl.appendChild(line);
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function setStatus(msg, cls = "") {
+      statusEl.textContent = msg;
+      statusEl.className = cls;
+    }
+
+    function renderTimeline(heardUntilMs) {
+      timelineEl.innerHTML = WORD_TIMESTAMPS.map((w) => {
+        const cls = w.offset_ms <= heardUntilMs ? "heard" : "pending";
+        return `<span class="word ${cls}">${w.word}</span>`;
+      }).join("");
+    }
+
+    function lastHeardWord(ms) {
+      let idx = 0;
+      let word = WORD_TIMESTAMPS[0].word;
+      for (let i = 0; i < WORD_TIMESTAMPS.length; i++) {
+        if (WORD_TIMESTAMPS[i].offset_ms <= ms) {
+          idx = i;
+          word = WORD_TIMESTAMPS[i].word;
+        }
+      }
+      return { idx, word };
+    }
+
+    function sendAck() {
+      if (!playing) return;
+      playedMs = Math.round(performance.now() - startPerf);
+      renderTimeline(playedMs);
+      addLog("playback_ack", `played_ms=${playedMs} utterance_id=${UTTERANCE_ID}`);
+    }
+
+    function stopPlayback(reason) {
+      playing = false;
+      if (ackTimer) {
+        clearInterval(ackTimer);
+        ackTimer = null;
+      }
+      if (sourceNode) {
+        try { sourceNode.stop(); } catch (_) {}
+        sourceNode = null;
+      }
+      playBtn.disabled = false;
+      bargeBtn.disabled = true;
+
+      const { idx, word } = lastHeardWord(playedMs);
+      addLog("truncate", `last_heard_word=${word} word_index=${idx} reason=${reason}`);
+      setStatus(`Truncated at "${word}" (index ${idx}, played_ms=${playedMs})`, "warn");
+    }
+
+    async function playUtterance() {
+      logEl.innerHTML = "";
+      playedMs = 0;
+      renderTimeline(0);
+
+      const durationMs = WORD_TIMESTAMPS[WORD_TIMESTAMPS.length - 1].offset_ms + 250;
+      const samples = Math.floor(SAMPLE_RATE * durationMs / 1000);
+
+      audioCtx = audioCtx || new AudioContext({ sampleRate: SAMPLE_RATE });
+      const buffer = audioCtx.createBuffer(1, samples, SAMPLE_RATE);
+      // Soft tick every word boundary so audible alignment can be checked by ear.
+      const data = buffer.getChannelData(0);
+      for (const w of WORD_TIMESTAMPS) {
+        const i0 = Math.floor(SAMPLE_RATE * w.offset_ms / 1000);
+        for (let i = 0; i < 120 && i0 + i < data.length; i++) {
+          data[i0 + i] = (i < 40 ? 0.2 : 0.0) * Math.sin(i * 0.4);
+        }
+      }
+
+      sourceNode = audioCtx.createBufferSource();
+      sourceNode.buffer = buffer;
+      sourceNode.connect(audioCtx.destination);
+      sourceNode.onended = () => {
+        if (playing) stopPlayback("natural_end");
+      };
+
+      addLog(
+        "tts_chunk",
+        `utterance_id=${UTTERANCE_ID} words=${WORD_TIMESTAMPS.length} duration_ms=${durationMs}`
+      );
+
+      playing = true;
+      playBtn.disabled = true;
+      bargeBtn.disabled = false;
+      startPerf = performance.now();
+      sourceNode.start();
+      setStatus("Playing — acks every 100 ms", "active");
+      ackTimer = setInterval(sendAck, ACK_INTERVAL_MS);
+      sendAck();
+    }
+
+    playBtn.addEventListener("click", playUtterance);
+    bargeBtn.addEventListener("click", () => {
+      addLog("barge_in", `at played_ms=${playedMs}`);
+      stopPlayback("barge_in");
+    });
+
+    renderTimeline(-1);
+  </script>
+</body>
+</html>

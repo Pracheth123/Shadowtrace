@@ -1,0 +1,5 @@
+{
+  "id": "bench-16",
+  "words": 45,
+  "text": "The API gateway handled rate limiting, authentication, and routing. It let us change backend services without touching clients. We also used it for A/B testing by routing a percentage of traffic to the new service."
+}
