@@ -18,8 +18,10 @@ dependencies = [
     "deepgram-sdk>=3.0",       # STT vendor 1, streaming WebSocket + keyword boost
     "websockets>=12.0",        # low-level WS; deepgram SDK and session plumbing both need it
     "numpy>=1.26",             # RMS energy for VAD; pure-Python audio math without native exts
-    # Stage 3 — inference + TTS (optional at runtime when provider/vendor == mock)
-    "openai>=1.40",            # AsyncOpenAI chat streaming + audio.speech TTS
+    # Groq LLM access via OpenAI-compatible Chat Completions API
+    # (base_url=https://api.groq.com/openai/v1). One SDK for streaming + tool calls.
+    "openai>=1.40",
+    "python-dotenv>=1.0",      # load GROQ_API_KEY from .env without committing secrets
 ]
 
 [tool.setuptools.packages.find]
@@ -28,3 +30,7 @@ where = ["src"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+addopts = "-m 'not live'"
+markers = [
+    "live: real Groq API calls (requires GROQ_API_KEY; run with: pytest -m live)",
+]

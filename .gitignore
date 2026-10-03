@@ -7,3 +7,6 @@ venv/
 logs/
 dist/
 *.pcm
+.env
+.env.*
+!.env.example

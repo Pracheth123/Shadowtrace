@@ -57,7 +57,7 @@ class SessionConfig:
     max_minutes: float = 12.0
     pack_id: str = "stage4-freeform"
     intensity: str = "realistic"
-    use_mock_llm: bool = True
+    use_mock_llm: bool = True  # tests / replay: True. Live: False → Groq
 
 
 @dataclass
@@ -78,6 +78,13 @@ class LiveSession:
         self._intensity_history: list[dict] = []
         self._gen_task: asyncio.Task | None = None
         self._closed = False
+        self._model_client = None
+        if not self.config.use_mock_llm:
+            from interview.llm.client import GroqModelClient
+
+            self._model_client = GroqModelClient(
+                bus=self.bus, session_id=self.session_id
+            )
 
     def attach(self) -> None:
         self.bus.subscribe("final_transcript", self._on_final)
@@ -159,10 +166,13 @@ class LiveSession:
         utterance_id = str(uuid.uuid4())
         try:
             iv = LeadInterviewer(
-                self.bus, self.session_id, turn_id, utterance_id
+                self.bus,
+                self.session_id,
+                turn_id,
+                utterance_id,
+                model_client=self._model_client,
+                provider="mock" if self.config.use_mock_llm else "groq",
             )
-            if self.config.use_mock_llm:
-                iv._provider = "mock"
             full = (await iv.generate(list(self.history))).strip()
             if self._closed:
                 return

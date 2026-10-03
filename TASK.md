@@ -13,10 +13,18 @@ Brief: `docs/stages/stage-04-lead-interviewer.md`
 - [x] FakeStt composition via `FAKE_STT_PATH` (browser `candidate_final` remains)
 - [ ] Live mic + vendor STT/LLM sessions (optional; needs API keys) for 1.1–1.5 s real baseline
 
+## 2026-10-03 — Groq model client
+
+- [x] `interview.llm.GroqModelClient` (OpenAI SDK → Groq base_url, `.env` key)
+- [x] Per-role models in `config/inference.yaml` (TTFT + tool-calling)
+- [x] Shared RPM limiter, 429 backoff, per-turn cap, `model_call` events
+- [x] Unit tests fake-only; `@pytest.mark.live` skipped by default
+- [ ] Re-run `bench_ttft.py` against Groq to replace provisional role models
+
 ## 2026-10-03 — Stage 3: Inference + TTS
 
 - [x] Offline inference/TTS path + benches (mock)
-- [ ] Live TTFT/TTS benches with API keys
+- [ ] Live TTFT benches via Groq (`pytest -m live` / bench script)
 
 ## Done earlier
 

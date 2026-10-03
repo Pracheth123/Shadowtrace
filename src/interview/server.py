@@ -9,9 +9,9 @@ Run:
 
 Env:
     SESSION_LOG_DIR   default logs/
-    MOCK_LLM=1        use FakeLlm path (default on)
+    GROQ_API_KEY      from .env — required for live model calls
+    MOCK_LLM=1        force FakeLlm (default when GROQ_API_KEY is unset)
     FAKE_STT_PATH     if set, replay this transcript fixture after session_start
-                      (composes FakeStt from transport/mocks onto the bus)
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ from fastapi.responses import JSONResponse
 from interview.events.bus import EventBus
 from interview.events.log import EventLogger
 from interview.events.schema import BargeIn, PlaybackAck, Truncate
+from interview.llm.env import groq_api_key, load_dotenv
 from interview.mocks.fake_stt import FakeStt
 from interview.session.runtime import LiveSession, SessionConfig
 from interview.session.speak import FakeSpeakPort
@@ -41,8 +42,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+load_dotenv()
 LOG_DIR = Path(os.environ.get("SESSION_LOG_DIR", "logs"))
 LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _use_mock_llm() -> bool:
+    """Mock unless GROQ_API_KEY is set and MOCK_LLM is not forced on."""
+    forced = os.environ.get("MOCK_LLM", "").strip().lower()
+    if forced in ("1", "true", "yes"):
+        return True
+    if forced in ("0", "false", "no"):
+        return False
+    return not bool(groq_api_key())
 
 
 @app.get("/health")
@@ -82,7 +94,7 @@ async def ws_session(websocket: WebSocket):
 
     bus.subscribe("tts_chunk", on_tts)
 
-    cfg = SessionConfig(use_mock_llm=os.environ.get("MOCK_LLM", "1") != "0")
+    cfg = SessionConfig(use_mock_llm=_use_mock_llm())
     live = LiveSession(
         bus=bus,
         session_id=session_id,

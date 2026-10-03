@@ -1,23 +1,32 @@
 # Inference and TTS Decisions
 
-## Provisional choice (pending live API benches)
+## Groq for all model calls (2026-10-03)
 
-**Date:** 2026-10-03  
-**Status:** offline path complete; live vendor numbers below are **provisional** until
-`OPENAI_API_KEY` / Anthropic / ElevenLabs keys are available to re-run
-`tools/bench_ttft.py` and `tools/bench_tts.py` without `--mock`.
+All chat/completions go through `interview.llm.GroqModelClient`
+(OpenAI Python SDK, `base_url=https://api.groq.com/openai/v1`, key `GROQ_API_KEY` in `.env`).
 
-Intended production defaults in `config/inference.yaml`:
+Role models in `config/inference.yaml` are chosen by **TTFT tier + tool-calling support**,
+not brand names. Provisional picks (re-measure with `tools/bench_ttft.py` on Groq):
 
-- LLM: `gpt-4o-mini` (OpenAI)
-- TTS: `openai-tts` / `tts-1` / voice `nova`
+| Role | Model | Why |
+|---|---|---|
+| `live_interviewer` | `llama-3.1-8b-instant` | Fastest tool-capable Groq chat model for speak-path TTFT |
+| `indexer` | `llama-3.1-8b-instant` | Same; indexer step limit keeps tool loops short |
+| `evaluator` | `llama-3.3-70b-versatile` | Stronger tool-capable model for quote verification |
+| `roadmap` | `llama-3.3-70b-versatile` | Same quality tier as evaluators |
 
-Reasons to keep when live benches confirm:
+Shared-key controls (also in `inference.yaml`):
 
-1. Measure at least three LLMs (small/fast + larger) and three TTS vendors.
-2. Prefer the model with best first-sentence latency **and** prompt adherence
-   (no "Great answer!" preamble).
-3. Prefer a single-vendor LLM+TTS pair when latency is within ~50 ms of the leader.
+- client-side `requests_per_minute` limiter across all roles
+- retry with exponential backoff on HTTP 429
+- `max_calls_per_turn` hard cap
+- each call emits a `model_call` event (`call_index` = per-session counter)
+
+Unit/replay tests use FakeLlm only. Real Groq tests: `pytest -m live` (skipped by default).
+
+## TTS
+
+TTS is separate from Groq chat. Default vendor remains `mock` until re-benchmarked.
 
 ---
 

@@ -290,6 +290,22 @@ class SessionComplete(EventBase):
     intensity_history: list[dict[str, Any]]
 
 
+class ModelCall(EventBase):
+    """
+    One Groq (or real-model) API call. Per-session usage is the max call_index
+    (or count of these events) in the log.
+    """
+    type: Literal["model_call"] = "model_call"
+    role: str                   # live_interviewer | indexer | evaluator | roadmap
+    model: str
+    call_index: int             # 1-based session counter
+    turn_call_index: int        # 1-based within turn (or session bucket)
+    latency_ms: float
+    ok: bool
+    status_code: int | None = None
+    error: str | None = None
+
+
 # ---------------------------------------------------------------------------
 # Discriminated union
 # ---------------------------------------------------------------------------
@@ -317,6 +333,7 @@ Event = Annotated[
         CoverageUpdate,
         IntensityChange,
         SessionComplete,
+        ModelCall,
     ],
     Field(discriminator="type"),
 ]

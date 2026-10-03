@@ -147,20 +147,28 @@ async def main_async(args: argparse.Namespace) -> None:
     else:
         try:
             from openai import AsyncOpenAI  # type: ignore
-            import os
         except ImportError:
             print("openai not installed. Use --mock for offline benchmarking.")
             sys.exit(1)
 
         import re
+
+        from interview.llm.client import GROQ_BASE_URL
+        from interview.llm.env import groq_api_key, load_dotenv
+
+        load_dotenv()
         sentence_end = re.compile(r"(?<=[.!?])\s")
+        api_key = groq_api_key()
+        if not api_key:
+            print("GROQ_API_KEY missing. Use --mock or set it in .env.")
+            sys.exit(1)
+        # All live model benches go to Groq (OpenAI-compatible base_url).
+        client = AsyncOpenAI(api_key=api_key, base_url=GROQ_BASE_URL)
 
         for model in args.models:
             print(f"Benchmarking {model}...")
             ttfts: list[float] = []
             ttfs_list: list[float] = []
-            api_key = os.environ.get("OPENAI_API_KEY", "")
-            client = AsyncOpenAI(api_key=api_key)
 
             for transcript in _TRANSCRIPTS:
                 history = (
@@ -232,12 +240,17 @@ def _upsert_section(path: Path, heading: str, section: str) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Benchmark LLM TTFT across models.")
     parser.add_argument("--mock", action="store_true", help="Use FakeLlm (no API key needed)")
+    parser.add_argument(
+        "--groq",
+        action="store_true",
+        help="Benchmark Groq models via OpenAI SDK (GROQ_API_KEY)",
+    )
     parser.add_argument("--runs", type=int, default=5, help="Runs per transcript per model")
     parser.add_argument(
         "--models",
         nargs="+",
-        default=["gpt-4o-mini", "gpt-4o", "claude-3-haiku-20240307"],
-        help="Model names to benchmark (OpenAI/Anthropic)",
+        default=["llama-3.1-8b-instant", "llama-3.3-70b-versatile"],
+        help="Model names to benchmark (Groq IDs when --groq)",
     )
     args = parser.parse_args()
     asyncio.run(main_async(args))
