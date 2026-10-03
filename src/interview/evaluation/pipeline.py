@@ -30,6 +30,23 @@ def _session_id(log_path: Path | None, transcript_path: Path) -> str:
     return transcript_path.stem
 
 
+def _intensity_note(log_path: Path | None) -> str:
+    """Say how hardness moved. Do not feed this into the scorer."""
+    if log_path is None or not log_path.is_file():
+        return "Intensity was not recorded. Scores are not adjusted for intensity."
+    moves: list[str] = []
+    for event in read_events(log_path):
+        if event.type == "intensity_change":
+            moves.append(f"{event.from_level} to {event.to_level}")
+    if not moves:
+        return "Intensity was not recorded. Scores are not adjusted for intensity."
+    return (
+        "Intensity moved from "
+        + ", then ".join(moves)
+        + ". Scores are not adjusted for intensity."
+    )
+
+
 def _event_rows(log_path: Path | None) -> list[dict]:
     if log_path is None or not log_path.is_file():
         return []
@@ -66,6 +83,7 @@ async def evaluate(
         findings=findings,
         dimensions=score_findings(findings),
         elapsed_s=round(time.perf_counter() - started, 4),
+        intensity_note=_intensity_note(log_path),
     )
     trace.flush()
     write_json(report, out_dir / "report.json")

@@ -14,6 +14,7 @@ export default function App() {
   const [running, setRunning] = useState(false);
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [utteranceId, setUtteranceId] = useState<string>("");
+  const [intensity, setIntensity] = useState<"coach" | "realistic" | "panel">("realistic");
 
   const wsRef = useRef<WebSocket | null>(null);
   const playedMsRef = useRef(0);
@@ -115,7 +116,7 @@ export default function App() {
 
     ws.onopen = () => {
       setStatus("Connected");
-      sendJson({ type: "session_start", intensity: "realistic" });
+      sendJson({ type: "session_start", intensity });
     };
     ws.onmessage = async (ev) => {
       if (typeof ev.data !== "string") {
@@ -185,7 +186,20 @@ export default function App() {
   return (
     <>
       <h1>Shadowtrace</h1>
-      <p className="sub">Stage 4 — talk with one interviewer (mock LLM/TTS by default).</p>
+      <p className="sub">One interviewer. Pick a hardness before you start.</p>
+
+      <div className="row">
+        {(["coach", "realistic", "panel"] as const).map((level) => (
+          <button
+            key={level}
+            disabled={running}
+            className={intensity === level ? "primary" : ""}
+            onClick={() => setIntensity(level)}
+          >
+            {level}
+          </button>
+        ))}
+      </div>
 
       <div className="row">
         <button className="primary" disabled={running} onClick={startSession}>

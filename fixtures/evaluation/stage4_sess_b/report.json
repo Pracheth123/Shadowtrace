@@ -9,9 +9,9 @@
     },
     {
       "id": "c-rollback",
-      "status": "held",
-      "quote": "Canaries at five percent auto rollback on errors",
-      "turn_id": "051532b1-b37e-424b-b971-b11fa86499a5"
+      "status": "untested",
+      "quote": "",
+      "turn_id": null
     }
   ],
   "findings": [
@@ -94,6 +94,6 @@
       "finding_count": 0
     }
   ],
-  "elapsed_s": 0.0017,
+  "elapsed_s": 0.0015,
   "transcript_pdf": "transcript.pdf"
 }

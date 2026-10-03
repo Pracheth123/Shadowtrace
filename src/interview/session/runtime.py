@@ -24,6 +24,7 @@ from interview.events.schema import (
     AgentStep,
     DraftReady,
     FinalTranscript,
+    IntensityChange,
     RouteDecision,
     SessionComplete,
     Truncate,
@@ -31,6 +32,7 @@ from interview.events.schema import (
 from interview.packs.model import PackLoadError, load_pack
 from interview.session.agent import LiveAgent, Outcome, phrase_probe
 from interview.session.guard import Intent
+from interview.session.intensity import apply_tone, step_down, step_up, with_hint
 from interview.session.interviewer import LeadInterviewer
 from interview.session.router import concession_line, draft_is_stale, route_answer
 from interview.session.signals import ClaimHint, SignalExtractor, SignalReading
@@ -116,6 +118,9 @@ class LiveSession:
         self.valid_drafts = 0
         self.stale_drafts = 0
         self._accepted_turn: str | None = None
+        self._dropped_intensity = False
+        self._recovered_intensity = False
+        self._steady_turns = 0
         self._model_client = None
         if not self.config.use_mock_llm:
             from interview.llm.client import GroqModelClient
@@ -225,6 +230,9 @@ class LiveSession:
         )
         if self._tools is not None:
             self._tools.add_transcript(event.text)
+        if self._extractor is not None:
+            reading = self._extractor.update(event.text, looks_complete=True)
+            await self._note_distress(event.turn_id or "", list(reading.distress_triggers))
         if self.on_wire:
             await self.on_wire({"type": "turn_end", "turn_id": event.turn_id})
 
@@ -308,6 +316,22 @@ class LiveSession:
             raise
 
     async def _deliver(self, text: str, turn_id: str, utterance_id: str) -> None:
+        raw = text
+        text, rude = apply_tone(raw)
+        if rude and self.history and self.history[-1].get("role") == "assistant":
+            if self.history[-1].get("content") == raw:
+                self.history[-1]["content"] = text
+            await self.bus.emit(
+                AgentStep(
+                    session_id=self.session_id,
+                    turn_id=turn_id,
+                    producer="tone_guardrail",
+                    step_index=0,
+                    band="live",
+                    phase="speak",
+                    summary="tone guardrail rewrote the line",
+                )
+            )
         t0 = time.monotonic() - self._started_at
         self.transcript.begin_agent(turn_id, utterance_id, text, t0, text.split())
         if self.on_wire:
@@ -456,6 +480,7 @@ class LiveSession:
         utterance_id: str,
         variant: str = "plain",
     ) -> None:
+        text = with_hint(self.config.intensity, text)
         self.history.append({"role": "assistant", "content": text})
         first = text.strip()
         if "." in first:
@@ -474,6 +499,57 @@ class LiveSession:
             )
         )
         await self._deliver(text, turn_id, utterance_id)
+
+    async def _note_distress(self, turn_id: str, triggers: list[str]) -> None:
+        """One step down on distress, one step back after two calm turns."""
+        if triggers:
+            if self._dropped_intensity:
+                return
+            self._dropped_intensity = True
+            self._steady_turns = 0
+            new_level = step_down(self.config.intensity)
+            await self._change_intensity(new_level, "down", ",".join(triggers), turn_id)
+            return
+        if not self._dropped_intensity or self._recovered_intensity:
+            return
+        self._steady_turns += 1
+        if self._steady_turns < 2:
+            return
+        self._recovered_intensity = True
+        await self._change_intensity(
+            step_up(self.config.intensity),
+            "up",
+            "two steady turns",
+            turn_id,
+        )
+
+    async def _change_intensity(self, new_level: str, direction: str, signal: str, turn_id: str) -> None:
+        old = self.config.intensity
+        if old == new_level:
+            return
+        self.config.intensity = new_level
+        if self._tools is not None:
+            self._tools.intensity = new_level
+        self._intensity_history.append(
+            {
+                "from_level": old,
+                "to_level": new_level,
+                "direction": direction,
+                "signal": signal,
+                "turn_id": turn_id,
+            }
+        )
+        await self.bus.emit(
+            IntensityChange(
+                session_id=self.session_id,
+                turn_id=turn_id,
+                producer="confidence_guardrail",
+                direction=direction,  # type: ignore[arg-type]
+                signal=signal,
+                from_level=old,  # type: ignore[arg-type]
+                to_level=new_level,  # type: ignore[arg-type]
+            )
+        )
 
     async def _on_signals(self, event) -> None:
         if self._tools is None:

@@ -57,6 +57,7 @@ def render_html(report: Report) -> str:
             "<style>body{font-family:Georgia,serif;max-width:42rem;margin:2rem auto;line-height:1.45}",
             "q{display:block;margin:.4rem 0 1rem;color:#333}</style></head><body>",
             f"<h1>Feedback</h1><p>Session {html.escape(report.session_id)}.</p>",
+            f"<p>{html.escape(report.intensity_note)}</p>" if report.intensity_note else "",
             f"<p><a href=\"{html.escape(report.transcript_pdf)}\" download>Download transcript as PDF</a></p>",
             "<h2>Dimensions</h2><ul>",
             *dimensions,
@@ -80,8 +81,10 @@ def _pdf_escape(text: str) -> str:
     return safe.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
 
 
-def write_transcript_pdf(turns: list[Turn], path: Path) -> None:
-    """A text transcript PDF. WeasyPrint is not used; it needs Pango and Cairo."""
+_LINES_PER_PAGE = 45
+
+
+def _wrap_turns(turns: list[Turn]) -> list[str]:
     lines: list[str] = []
     for turn in turns:
         prefix = "Candidate" if turn.speaker == "candidate" else "Interviewer"
@@ -90,37 +93,64 @@ def write_transcript_pdf(turns: list[Turn], path: Path) -> None:
             lines.append(chunk[:90])
             chunk = chunk[90:]
         lines.append(chunk)
-    if not lines:
-        lines = ["No transcript text."]
-    # One page is enough for the fixtures. Longer sessions continue on the same page stream
-    # up to a practical cap; the JSON report still has every quote.
-    lines = lines[:80]
-    commands = ["BT", "/F1 11 Tf", "50 780 Td", "14 TL"]
+    return lines or ["No transcript text."]
+
+
+def _page_stream(lines: list[str]) -> bytes:
+    commands = ["BT", "/F1 11 Tf", "50 760 Td", "14 TL"]
     for line in lines:
         commands.append(f"({_pdf_escape(line)}) Tj")
         commands.append("T*")
     commands.append("ET")
-    stream = "\n".join(commands).encode("latin-1", errors="replace")
-    objects = [
-        b"1 0 obj<< /Type /Catalog /Pages 2 0 R >>endobj\n",
-        b"2 0 obj<< /Type /Pages /Count 1 /Kids [3 0 R] >>endobj\n",
-        b"3 0 obj<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
-        b"/Contents 4 0 R /Resources<< /Font<< /F1 5 0 R >> >> >>endobj\n",
-        b"4 0 obj<< /Length " + str(len(stream)).encode("ascii") + b" >>stream\n" + stream + b"\nendstream\nendobj\n",
-        b"5 0 obj<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>endobj\n",
-    ]
+    return "\n".join(commands).encode("latin-1", errors="replace")
+
+
+def write_transcript_pdf(turns: list[Turn], path: Path) -> None:
+    """A text transcript PDF. WeasyPrint is not used; it needs Pango and Cairo."""
+    lines = _wrap_turns(turns)
+    chunks = [lines[i : i + _LINES_PER_PAGE] for i in range(0, len(lines), _LINES_PER_PAGE)]
+    font_id = 3 + 2 * len(chunks)
+    objects: dict[int, bytes] = {
+        1: b"<< /Type /Catalog /Pages 2 0 R >>",
+        font_id: b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    }
+    kids: list[str] = []
+    next_id = 3
+    for chunk in chunks:
+        page_id = next_id
+        content_id = next_id + 1
+        next_id += 2
+        kids.append(f"{page_id} 0 R")
+        stream = _page_stream(chunk)
+        objects[content_id] = (
+            b"<< /Length "
+            + str(len(stream)).encode("ascii")
+            + b" >>\nstream\n"
+            + stream
+            + b"\nendstream"
+        )
+        objects[page_id] = (
+            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            f"/Contents {content_id} 0 R /Resources<< /Font<< /F1 {font_id} 0 R >> >> >>"
+        ).encode("ascii")
+    objects[2] = (
+        f"<< /Type /Pages /Count {len(chunks)} /Kids [{' '.join(kids)}] >>"
+    ).encode("ascii")
+
     blob = bytearray(b"%PDF-1.4\n")
     offsets = [0]
-    for obj in objects:
+    for number in range(1, font_id + 1):
         offsets.append(len(blob))
-        blob.extend(obj)
+        blob.extend(f"{number} 0 obj".encode("ascii"))
+        blob.extend(objects[number])
+        blob.extend(b"endobj\n")
     xref = len(blob)
-    blob.extend(f"xref\n0 {len(offsets)}\n".encode("ascii"))
+    blob.extend(f"xref\n0 {font_id + 1}\n".encode("ascii"))
     blob.extend(b"0000000000 65535 f \n")
     for offset in offsets[1:]:
         blob.extend(f"{offset:010d} 00000 n \n".encode("ascii"))
     blob.extend(
-        f"trailer<< /Size {len(offsets)} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode("ascii")
+        f"trailer<< /Size {font_id + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode("ascii")
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(blob)

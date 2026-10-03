@@ -9,9 +9,9 @@
     },
     {
       "id": "c-rollback",
-      "status": "held",
-      "quote": "I led incident response across three teams in 2023",
-      "turn_id": "18be8605-075e-4971-9105-91b95b4b2517"
+      "status": "untested",
+      "quote": "",
+      "turn_id": null
     }
   ],
   "findings": [
@@ -94,6 +94,6 @@
       "finding_count": 0
     }
   ],
-  "elapsed_s": 0.0016,
+  "elapsed_s": 0.0015,
   "transcript_pdf": "transcript.pdf"
 }

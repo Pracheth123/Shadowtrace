@@ -44,7 +44,9 @@ def adjudicate(claims: list[EvalClaim], turns: list[Turn]) -> list[ClaimJudgemen
             if not keys:
                 continue
             matched = sum(1 for key in keys if key in turn.text.casefold())
-            if matched < max(1, len(keys) // 4):
+            # Half the claim's content words. One shared word is not a defence.
+            needed = max(2, (len(keys) + 1) // 2)
+            if matched < needed:
                 continue
             status = "collapsed" if _negated_before(turn.text, keys) else "held"
             chosen = ClaimJudgement(

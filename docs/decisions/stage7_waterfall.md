@@ -41,6 +41,8 @@ Session summary (5 measured turns):
 
 Valid-draft p50 is 0.2 ms. The stale turn is 0.2 ms as well, because the refresh is a local phrase, not a model call. The stage target of ~450 ms valid and ~1.0 s stale is the live-vendor budget. This recording shows the mock path only: the draft is already built before endpoint, so endpoint-to-audio does not wait on tools.
 
+The live-vendor number was not measured. There is no `.env` file and `GROQ_API_KEY` is unset, so `tools/bench_ttft.py` cannot call Groq. No sleep was added to imitate that round trip.
+
 ## Other checks
 
 - Signal extraction stays under 50 ms per partial. `scorer_transcript` returns `{text}` only.

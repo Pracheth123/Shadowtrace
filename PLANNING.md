@@ -9,5 +9,6 @@ Active work is tracked in [`TASK.md`](TASK.md). Stage briefs are in
 
 ## Current focus
 
-Stage 9 stores session scores in SQLite and plans the next practice from one pack at a time. Four seeded `behavioral-core` sessions show technical rising from 0.25 to 0.80. The React dashboard is at `#dashboard`.  
-Next: Stage 10 — intensity toggle and confidence guardrail.
+Stage 10 lets the candidate pick coach, realistic, or panel before the session. Distress steps the interviewer down one level and two calm turns step it back, once each. The spine is still asked. A rude line is rewritten before it is spoken. The report records the move and does not change scores for it. Panel is a depth setting only.
+
+Next: Stage 11 — panel voices and hardening. Do not build that pass, and do not build the live-coding pack, until it is explicitly approved.

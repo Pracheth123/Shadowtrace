@@ -1,5 +1,17 @@
 # Tasks
 
+## 2026-10-03 — Stage 10: Intensity and confidence guardrail
+
+Brief: `docs/stages/stage-10-intensity-guardrail.md`
+
+- [x] Intensity config `coach` / `realistic` / `panel` (panel is depth only; no second voice)
+- [x] Guard and agent read intensity for probe depth, hints, and interruption
+- [x] Distress steps down one level once; two steady turns step back once; spine still asked
+- [x] Tone guardrail on every spoken line
+- [x] Client hardness picker sent on `session_start`
+- [x] Report notes intensity and does not change scores for it
+- [x] Distress replay and coach-vs-realistic evidence in `docs/decisions/stage10_intensity.md`
+
 ## 2026-10-03 — Stage 9: Roadmap, public pack, dashboard
 
 Brief: `docs/stages/stage-09-roadmap-pack-dashboard.md`
@@ -35,7 +47,7 @@ Brief: `docs/stages/stage-07-signal-bus-turn-controller.md`
 - [x] `note_claim_status` logged as a tool result; scorer view is transcript text only
 - [x] Crowd-noise frames do not reach barge-in confidence
 - [x] Recorded `fixtures/sessions/stage7_speculative/` + `docs/decisions/stage7_waterfall.md`
-- [ ] Live-vendor waterfall (the ~450 ms / ~1.0 s budget). This recording is the mock path: p50 0.2 ms, stale-draft rate 0.20
+- [ ] Live-vendor waterfall (the ~450 ms / ~1.0 s budget). Mock path only: p50 0.2 ms, stale-draft rate 0.20. `GROQ_API_KEY` is unset and there is no `.env`, so the vendor call was not run and no sleep was added to fake it.
 
 ## 2026-10-03 — Stage 6: Intake, indexer, fit
 

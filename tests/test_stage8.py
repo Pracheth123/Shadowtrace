@@ -114,6 +114,47 @@ async def test_stage4_recording_report(session: Path, tmp_path: Path) -> None:
     }
 
 
+@pytest.mark.asyncio
+async def test_one_shared_word_does_not_hold_a_claim(tmp_path: Path) -> None:
+    transcript = tmp_path / "thin.json"
+    transcript.write_text(
+        json.dumps(
+            [
+                {
+                    "speaker": "candidate",
+                    "turn_id": "t-thin",
+                    "text": "Canaries at five percent auto rollback on errors.",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    report = await evaluate(
+        transcript_path=transcript,
+        claims_path=CLAIMS,
+        out_dir=tmp_path / "thin",
+    )
+    by_id = {claim.id: claim for claim in report.claims}
+    assert by_id["c-rollback"].status == "untested"
+    assert by_id["c-kafka"].status == "untested"
+
+
+def test_transcript_pdf_keeps_every_line(tmp_path: Path) -> None:
+    from interview.evaluation.report import write_transcript_pdf
+    from interview.evaluation.schema import Turn
+
+    turns = [
+        Turn(turn_id=f"t{i}", speaker="candidate", text=f"Answer number {i} stays in the download.")
+        for i in range(120)
+    ]
+    path = tmp_path / "transcript.pdf"
+    write_transcript_pdf(turns, path)
+    blob = path.read_bytes()
+    assert blob.startswith(b"%PDF")
+    assert b"/Count 3" in blob
+    assert b"Answer number 119" in blob
+
+
 def test_context_is_data_and_fake_eval_is_canned(tmp_path: Path) -> None:
     poisoned = tmp_path / "resume.txt"
     poisoned.write_text(

@@ -76,3 +76,5 @@ class Report(BaseModel):
     dimensions: list[DimensionScore]
     elapsed_s: float
     transcript_pdf: str = "transcript.pdf"
+    # Neutral record of hardness. Dimension scores do not read this field.
+    intensity_note: str = ""
