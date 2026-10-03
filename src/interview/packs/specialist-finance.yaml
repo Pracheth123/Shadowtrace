@@ -1,0 +1,45 @@
+pack_id: specialist-finance
+title: Finance specialist round
+round: domain_specialist
+role_family: finance
+# The deepest round, and the one claim interrogation belongs in.
+time_budget_s: 720
+spine:
+  - id: analysis
+    text: "Walk me through an analysis you built and the question it had to answer."
+    competency: practical_application
+  - id: assumptions
+    text: "Which assumption was that most sensitive to, and how did you test it?"
+    competency: domain_knowledge
+  - id: interpretation
+    text: "How did you present the conclusion to someone who disagreed?"
+    competency: tradeoff_reasoning
+  - id: scenario
+    text: "What would have changed your recommendation?"
+    competency: tradeoff_reasoning
+competencies:
+  - id: domain_knowledge
+    label: Domain knowledge
+  - id: practical_application
+    label: Practical application
+  - id: tradeoff_reasoning
+    label: Tradeoff reasoning
+probe_policy:
+  max_depth: 4
+  seconds_per_spine: 110
+  min_probe_s: 50
+rubric:
+  version: specialist.finance.v1
+  dimensions:
+    - id: domain_knowledge
+      label: Finance knowledge
+      weight: 0.40
+      kind: knowledge
+    - id: practical_application
+      label: Analysis in practice
+      weight: 0.35
+      kind: reasoning
+    - id: tradeoff_reasoning
+      label: Assumptions and scenario reasoning
+      weight: 0.25
+      kind: reasoning

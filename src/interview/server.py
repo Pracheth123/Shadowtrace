@@ -17,9 +17,16 @@ Env:
     INTAKE_RPM          intake requests per candidate per hour, default 5
     STORE_PATH          longitudinal store for delete-my-data, default fixtures/roadmap/longitudinal.sqlite
 
+Audio protocol (stage 14). Binary frames on this socket are candidate
+microphone PCM16 in the voice lane, forwarded to Deepgram. Synthesised audio
+travels the other way as a JSON `audio_chunk` metadata frame immediately
+followed by its binary frame, so the browser decodes with the real encoding and
+sample rate instead of assuming 16 kHz. See transport/voice_session.py.
+
 Video: there is deliberately no video ingest path. The client may show a local
 camera preview, but no frame is ever sent here, so video cannot become a model
-or score input (contract 9). Unsolicited binary frames are counted and dropped.
+or score input (contract 9). In the text lane, where no microphone stream is
+expected, binary frames are counted and dropped.
 """
 
 from __future__ import annotations
@@ -47,8 +54,10 @@ from interview.hardening.limits import (
 from interview.hardening.reconnect import ReconnectRegistry
 from interview.llm.env import groq_api_key, load_dotenv
 from interview.mocks.fake_stt import FakeStt
+from interview.config import ProviderCredentialsMissing, get_settings
 from interview.session.runtime import LiveSession, SessionConfig
 from interview.session.speak import FakeSpeakPort, TextLaneSpeakPort
+from interview.transport.voice_session import VoiceSession, VoiceUnavailable
 
 STAGE = 11
 
@@ -72,6 +81,18 @@ STORE_PATH = Path(
 
 # One process, one set of limits. A second process gets its own; that is stated
 # in hardening/limits.py rather than implied here.
+# Panel personas → distinct, currently-valid Deepgram Aura-2 voices. The old
+# values were OpenAI voice names ("nova"/"alloy"/"onyx") and would be rejected.
+PANEL_VOICES = {
+    "lead": "aura-2-thalia-en",
+    "recruiter": "aura-2-vesta-en",
+    "peer": "aura-2-arcas-en",
+    "hiring_manager": "aura-2-apollo-en",
+    "manager": "aura-2-apollo-en",
+    "specialist": "aura-2-orpheus-en",
+    "bar_raiser": "aura-2-orpheus-en",
+}
+
 SESSION_CAP = SessionCap(limit=int(os.environ.get("MAX_LIVE_SESSIONS", "8")))
 INTAKE_LIMITER = RateLimiter(
     RateLimit(max_events=int(os.environ.get("INTAKE_RPM", "5")), window_s=3600.0)
@@ -241,6 +262,8 @@ async def ws_session(websocket: WebSocket):
             word_ts_by_utt=state["word_ts"],
             holder=state["holder"],
             opening=None,
+            voice=state.get("voice"),
+            voice_error=state.get("voice_error"),
         )
         return
 
@@ -271,11 +294,59 @@ async def ws_session(websocket: WebSocket):
         panel_mode=panel_requested and _panel_allowed(),
         lane=lane,
     )
-    speak = (
-        TextLaneSpeakPort(bus, session_id)
-        if lane == "text"
-        else FakeSpeakPort(bus, session_id)
-    )
+    word_ts_by_utt: dict[str, list] = {}
+    holder = SocketHolder()
+    settings = get_settings()
+
+    async def send_text(payload: dict) -> None:
+        await holder.send_text(json.dumps(payload))
+
+    async def send_bytes(payload: bytes) -> None:
+        await holder.send_bytes(payload)
+
+    # The speak path. A real voice session synthesises through Deepgram; the
+    # text lane emits no audio at all. `FakeSpeakPort` is reachable only when
+    # mocks are explicitly allowed, which `Settings` forbids in production — so
+    # a missing credential can no longer produce a silent "successful" interview.
+    voice: VoiceSession | None = None
+    voice_error: str | None = None
+    if lane == "text":
+        speak = TextLaneSpeakPort(bus, session_id)
+    elif settings.has_deepgram:
+        voice = VoiceSession(
+            bus,
+            session_id,
+            settings,
+            send_text,
+            send_bytes,
+            voice_for_persona=PANEL_VOICES,
+            get_turn_id=lambda: getattr(live, "current_turn_id", None),
+        )
+        speak = voice
+    elif settings.allow_mock_providers and not settings.is_production:
+        speak = FakeSpeakPort(bus, session_id)
+        voice_error = (
+            "DEEPGRAM_API_KEY is not set, so this session is running with mock "
+            "audio. It is a development session, not a real interview."
+        )
+    else:
+        # Real-provider mode with no credential: refuse rather than fake it.
+        await websocket.send_text(
+            json.dumps(
+                {
+                    "type": "session_rejected",
+                    "reason": (
+                        "Voice interviews need DEEPGRAM_API_KEY on the server. "
+                        "Use the text lane, or ask the operator to configure it."
+                    ),
+                }
+            )
+        )
+        await websocket.close(code=1011)
+        SESSION_CAP.release(session_id)
+        await logger.close()
+        return
+
     live = LiveSession(
         bus=bus,
         session_id=session_id,
@@ -286,15 +357,15 @@ async def ws_session(websocket: WebSocket):
     )
     live.attach()
 
-    word_ts_by_utt: dict[str, list] = {}
-    holder = SocketHolder()
-
     async def on_tts(event) -> None:
-        """Record word timings, and send a silence burst so the client can ack."""
+        """Keep word timings for truncation. Audio itself is sent by VoiceSession."""
         if event.type != "tts_chunk":
             return
         word_ts_by_utt[event.utterance_id] = event.word_timestamps
-        await holder.send_bytes(b"\x00" * (320 * 20))
+        if voice is None and lane != "text":
+            # Mock lane only: a short silence burst so the client's playback
+            # accounting has something to advance against.
+            await holder.send_bytes(b"\x00" * (320 * 20))
 
     bus.subscribe("tts_chunk", on_tts)
 
@@ -307,6 +378,8 @@ async def ws_session(websocket: WebSocket):
         word_ts_by_utt=word_ts_by_utt,
         holder=holder,
         opening=opening,
+        voice=voice,
+        voice_error=voice_error,
     )
 
 
@@ -320,6 +393,8 @@ async def _run_socket(
     word_ts_by_utt: dict[str, list],
     holder: SocketHolder,
     opening: dict | None,
+    voice: VoiceSession | None = None,
+    voice_error: str | None = None,
 ) -> None:
     """
     Drive one socket for `live`. Called again, with the same objects, on reconnect.
@@ -347,6 +422,8 @@ async def _run_socket(
         live=live,
         word_ts=word_ts_by_utt,
         holder=holder,
+        voice=voice,
+        voice_error=voice_error,
     )
     reconnected = opening is None
     if reconnected:
@@ -364,6 +441,16 @@ async def _run_socket(
                 "lane": live.config.lane,
                 "panel_mode": live.config.panel_mode,
                 "resumed": reconnected,
+                # The client needs these before it opens a microphone: what to
+                # convert to, and whether this is a real provider session.
+                "voice": {
+                    "enabled": voice is not None,
+                    "provider": "deepgram" if voice is not None else "mock",
+                    "target_sample_rate": get_settings().deepgram_sample_rate,
+                    "channels": get_settings().deepgram_channels,
+                    "frame_ms": 20,
+                },
+                "degraded": voice_error,
             }
         )
     )
@@ -410,7 +497,10 @@ async def _run_socket(
 
     try:
         if opening is not None and opening.get("type") == "session_start":
-            await start_session(opening)
+            # For a voice session, we must wait for the client's `audio_start`
+            # before the AI can speak the opening line. Text sessions can start now.
+            if live.config.lane == "text":
+                await start_session(opening)
 
         while True:
             message = await websocket.receive()
@@ -418,10 +508,14 @@ async def _run_socket(
                 dropped = True
                 break
             if message.get("bytes") is not None:
-                # PCM frames are reserved for transport STT, which the mock lane
-                # does not use. Nothing else — video included — has an ingest
-                # path here, so anything unexpected is counted and dropped.
-                dropped_binary += 1
+                # Candidate microphone PCM16. This is the path that used to
+                # count and discard every frame, which is why a voice session
+                # heard nothing. Only the voice lane has an ingest path; in the
+                # text lane a binary frame is unexpected and still dropped.
+                if voice is not None:
+                    await voice.push_audio(message["bytes"])
+                else:
+                    dropped_binary += 1
                 continue
             if message.get("text") is None:
                 continue
@@ -435,11 +529,64 @@ async def _run_socket(
             if mtype == "session_start":
                 await start_session(msg)
 
+            elif mtype == "audio_start":
+                # The browser reports its real AudioContext rate; the server
+                # converts from that rather than assuming one.
+                if voice is None:
+                    await holder.send_text(
+                        json.dumps(
+                            {
+                                "type": "voice_error",
+                                "reason": "voice_disabled",
+                                "detail": (
+                                    voice_error
+                                    or "This session has no voice provider."
+                                ),
+                            }
+                        )
+                    )
+                    continue
+                try:
+                    await voice.start(
+                        source_sample_rate=int(msg.get("sample_rate") or 0),
+                        channels=int(msg.get("channels") or 1),
+                    )
+                    # Now that the voice provider is connected, the AI can speak.
+                    if not started and opening and opening.get("type") == "session_start":
+                        await start_session(opening)
+                except (VoiceUnavailable, ProviderCredentialsMissing) as exc:
+                    await holder.send_text(
+                        json.dumps(
+                            {
+                                "type": "voice_error",
+                                "reason": "provider_unavailable",
+                                "detail": str(exc)[:300],
+                                "can_use_text_lane": True,
+                            }
+                        )
+                    )
+
+            elif mtype == "mute":
+                if voice is not None:
+                    voice.set_muted(bool(msg.get("muted", True)))
+
+            elif mtype == "answer_done":
+                # Explicit end of answer: push-to-talk release, or the candidate
+                # pressing done. Closes the turn without waiting for provider
+                # endpointing, and is a no-op if the turn already closed.
+                if voice is not None:
+                    await voice.finalise_turn("client")
+
             elif mtype == "push_to_talk":
                 # The fallback for a room where open-mic VAD cannot work. While
                 # it is on, the candidate holds to talk, so an unheld barge-in
                 # is noise and is ignored rather than cutting the agent off.
                 push_to_talk = bool(msg.get("on", True))
+                # Push-to-talk now gates the real outgoing stream: while it is
+                # on and the key is not held, no audio leaves the browser's
+                # session socket for transcription.
+                if voice is not None:
+                    voice.set_muted(push_to_talk)
                 await live.note_fallback(
                     "push_to_talk",
                     f"push-to-talk {'on' if push_to_talk else 'off'}",
@@ -465,6 +612,11 @@ async def _run_socket(
                 played = int(msg.get("played_ms", last_played_ms))
                 utt = msg.get("utterance_id", current_utt)
                 turn_id = msg.get("turn_id") or "turn-live"
+                # Both halves of the interruption, before anything else: stop
+                # the provider generating and tell the browser to drop what it
+                # has already buffered.
+                if voice is not None:
+                    await voice.barge_in(utt or None)
                 await bus.emit(
                     BargeIn(
                         session_id=session_id,
@@ -515,11 +667,11 @@ async def _run_socket(
             )
         holder.ws = None
         _PARKED[session_id] = asyncio.create_task(
-            _park(session_id, bus, logger, live)
+            _park(session_id, bus, logger, live, voice)
         )
         return
 
-    await _close_out(session_id, bus, logger, live)
+    await _close_out(session_id, bus, logger, live, voice)
 
 
 async def _close_out(
@@ -527,10 +679,14 @@ async def _close_out(
     bus: EventBus,
     logger: EventLogger,
     live: LiveSession,
+    voice: VoiceSession | None = None,
 ) -> None:
     """End the session if it is still open, then release everything it holds."""
     if not live._closed:
         await live.end(reason="disconnect")
+    if voice is not None:
+        # Provider sockets, the pump task and the audio queue all go here.
+        await voice.close()
     RECONNECT.revoke(session_id)
     SESSION_CAP.release(session_id)
     _PARKED.pop(session_id, None)
@@ -543,6 +699,7 @@ async def _park(
     bus: EventBus,
     logger: EventLogger,
     live: LiveSession,
+    voice: VoiceSession | None = None,
 ) -> None:
     """
     Hold a dropped session open for the resume window, then close it out.
@@ -555,7 +712,7 @@ async def _park(
         await asyncio.sleep(_PARK_TTL_S)
     except asyncio.CancelledError:
         return  # the candidate came back
-    await _close_out(session_id, bus, logger, live)
+    await _close_out(session_id, bus, logger, live, voice)
 
 
 @app.get("/")

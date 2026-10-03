@@ -8,6 +8,13 @@ pack verbatim. A probe is one question phrased from the guard-approved target.
 Stage 11: in panel mode there is one instance of this class per persona, all
 sharing one `SessionTools` and therefore one guard. `persona` is stamped on the
 steps this instance emits; it is None outside panel mode.
+
+Stage 13: an agent may be given a `RoleSpec` and a `RoleProposer`. When it is,
+the next move comes from that role's own reasoning — HR, hiring manager or
+domain specialist — instead of the shared deterministic `propose()`, and a
+probe is phrased by the role rather than by the generic `phrase_probe`. The
+guard is unchanged and still rules on every proposal, so role-specific
+reasoning cannot widen what may be asked.
 """
 
 from __future__ import annotations
@@ -105,6 +112,8 @@ class LiveAgent:
         scripted_intents: dict[int, Intent] | None = None,
         max_tool_calls: int = DEFAULT_MAX_TOOL_CALLS,
         persona: str | None = None,
+        spec=None,
+        proposer=None,
     ) -> None:
         self._bus = bus
         self._session_id = session_id
@@ -114,6 +123,15 @@ class LiveAgent:
         # None outside panel mode. Panel members differ only by this field and
         # their voice — the rules they answer to are the one shared guard.
         self.persona = persona
+        # Stage 13 role wiring. Both None keeps the stage-5 behaviour exactly.
+        self._spec = spec
+        self._proposer = proposer
+        # What the candidate last said, so a role can anchor a follow-up on it.
+        self._last_answer = ""
+        # Role-phrased question for the current turn, set by the proposer and
+        # used instead of the generic probe template.
+        self._proposed_question: str | None = None
+        self.last_decision_summary = ""
 
     async def run(self, *, turn_id: str, turn_index: int, commit: bool = True) -> Outcome:
         step = 0
@@ -174,7 +192,22 @@ class LiveAgent:
             step += 1
         else:
             await think("propose next move from tool results")
-            intent = self._scripted.get(turn_index) or propose(self._tools)
+            self._proposed_question = None
+            scripted = self._scripted.get(turn_index)
+            if scripted is not None:
+                intent = scripted
+            elif self._proposer is not None and self._spec is not None:
+                move = await self._propose_as_role(turn_id)
+                intent = move.to_intent()
+                # Keep the role's own phrasing for a probe; the guard may still
+                # reject the target, in which case nothing is spoken from it.
+                if move.action == "probe" and move.question:
+                    self._proposed_question = move.question
+                self.last_decision_summary = move.decision_summary
+                if move.decision_summary:
+                    await think(move.decision_summary)
+            else:
+                intent = propose(self._tools)
             decision = evaluate(intent, self._tools.guard_state())
             if not decision.accepted:
                 await self._emit_override(turn_id, step, decision)
@@ -216,6 +249,41 @@ class LiveAgent:
             await self.commit_outcome(turn_id, decision)
         await speak(f"{decision.kind} accepted")
         return Outcome(kind=decision.kind, text=text, decision=decision)  # type: ignore[arg-type]
+
+    def note_answer(self, text: str) -> None:
+        """Record the candidate's latest answer for role anchoring."""
+        if text and text.strip():
+            self._last_answer = text.strip()
+
+    async def _propose_as_role(self, turn_id: str):
+        """Ask this agent's role for the next move."""
+        from interview.session.proposer import EvidenceItem, ProposalContext
+
+        tools = self._tools
+        state = tools.guard_state()
+        evidence = tuple(
+            EvidenceItem(
+                id=claim.id,
+                text=claim.text,
+                competency=claim.competency,
+                source_ref=getattr(claim, "source_ref", "") or claim.id,
+            )
+            for claim in tools.claims
+        )
+        context = ProposalContext(
+            spec=self._spec,
+            state=state,
+            last_answer=self._last_answer,
+            transcript=tuple(tools.transcript_texts),
+            evidence=evidence,
+            time_remaining_s=tools.time_remaining_s(),
+            handoff=dict(self.handoff_context or {}),
+        )
+        return await self._proposer.propose(context)
+
+    # Set by the coordinator before a round begins; read-only context from
+    # earlier rounds. Statements and open questions only, never ratings.
+    handoff_context: dict | None = None
 
     async def commit_outcome(self, turn_id: str, decision: Decision) -> None:
         """Apply a prepared decision once the floor is granted."""
@@ -291,6 +359,12 @@ class LiveAgent:
                     intent.proposed_text,
                 )
             return spoken
+
+        # A role-phrased question wins: it is what makes an HR follow-up sound
+        # like a recruiter and a specialist follow-up sound like a practitioner.
+        # Only used when the guard accepted the probe target the role named.
+        if self._proposed_question and decision.accepted:
+            return self._proposed_question
 
         claim_text = None
         anchor = decision.transcript_anchor

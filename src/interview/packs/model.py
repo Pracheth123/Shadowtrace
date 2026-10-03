@@ -10,6 +10,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import yaml
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 _PACK_DIR = Path(__file__).parent
@@ -61,6 +63,61 @@ class PanelRole(BaseModel):
     competency: str
 
 
+class RubricDimension(BaseModel):
+    """
+    One dimension a round actually assesses.
+
+    Replaces the assumption that every interview scores the same four technical
+    dimensions. A sales specialist round has no "technical substance" axis, and
+    inventing one so the shape matches is how a candidate ends up with a
+    meaningless score on a skill nobody asked about.
+
+    `kind` says what the dimension rests on:
+      - "reasoning"  — judgement shown in the answer
+      - "knowledge"  — domain knowledge demonstrated
+      - "evidence"   — consistency with supplied material
+      - "communication" — structure and clarity of the answer itself
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    label: str
+    weight: float = Field(ge=0.0, le=1.0)
+    kind: Literal["reasoning", "knowledge", "evidence", "communication"]
+
+
+class PackRubric(BaseModel):
+    """
+    Versioned rubric for one round.
+
+    The version is part of the identity because a report written against
+    rubric v1 is not comparable to one written against v2, and silently
+    charting them as one trend would invent improvement or decline that never
+    happened.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: str
+    dimensions: list[RubricDimension] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _weights_and_ids(self) -> "PackRubric":
+        seen: set[str] = set()
+        for dimension in self.dimensions:
+            if dimension.id in seen:
+                raise ValueError(f"duplicate rubric dimension {dimension.id}")
+            seen.add(dimension.id)
+        total = sum(dimension.weight for dimension in self.dimensions)
+        if abs(total - 1.0) > 1e-6:
+            raise ValueError(f"rubric weights must sum to 1, got {total}")
+        return self
+
+    def dimension_ids(self) -> list[str]:
+        return [dimension.id for dimension in self.dimensions]
+
+
 class ScoringWeights(BaseModel):
     """Four dimensions. Equal weight by default; a pack may reweight."""
 
@@ -88,7 +145,22 @@ class Pack(BaseModel):
     spine: list[SpineItem] = Field(min_length=1)
     competencies: list[Competency] = Field(min_length=1)
     probe_policy: ProbePolicy
-    scoring_weights: ScoringWeights
+    # Which round this pack supplies a spine for. Empty keeps the pre-existing
+    # single-round packs valid.
+    round: Literal["", "hr", "hiring_manager", "domain_specialist"] = ""
+    # Role family, for specialist packs. Empty for round-agnostic packs.
+    role_family: str = ""
+    # The round's own rubric. When absent, the legacy four-dimension
+    # `scoring_weights` still applies, so older packs and older reports keep
+    # working unchanged.
+    rubric: PackRubric | None = None
+    # Legacy four-dimension weights. Optional since stage 13: a role pack
+    # declares `rubric` instead.
+    scoring_weights: ScoringWeights = Field(
+        default_factory=lambda: ScoringWeights(
+            technical=0.25, structure=0.25, delivery=0.25, competency=0.25
+        )
+    )
     # Stage 11, optional. A pack without a panel roster runs single-voice and
     # panel mode falls back to one persona.
     panel: list[PanelRole] = Field(default_factory=list)
@@ -145,6 +217,12 @@ class Pack(BaseModel):
 
     def spine_ids(self) -> list[str]:
         return [item.id for item in self.spine]
+
+    def rubric_dimension_ids(self) -> list[str]:
+        """Dimensions this pack assesses, legacy packs included."""
+        if self.rubric is not None:
+            return self.rubric.dimension_ids()
+        return ["technical", "structure", "delivery", "competency"]
 
     def panel_role(self, persona: str) -> PanelRole:
         for role in self.panel:

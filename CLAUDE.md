@@ -88,12 +88,25 @@ Default loop: plain `asyncio` tool loop. No agent framework (LangChain/LangGraph
 with a measured reason.
 
 **If you find an older design doc** mentioning a blackboard, versioned snapshots, a rolling scorer,
-three live personas, a floor controller with urge scores, fairness decay, server-side audio mixing,
+a floor controller with urge scores, fairness decay, server-side audio mixing,
 an employer review queue, a consensus packet, an audit log, or a deterministic planner that *chooses*
 questions: those are removed or superseded. Do not build them. Also do not build facial
 emotion detection, gaze or iris tracking, resume scores with eligibility cutoffs, or scoring
 an answer by similarity to a model answer. Those violate contracts 8 and 9. Panel mode
 (multi-voice) exists but is the last stage and lives behind a flag.
+
+**Role rounds (stage 13) are the one sanctioned exception to "three live personas",
+and the distinction is contention, not count.** What was removed was three personas
+*competing for the floor* — urge scores, fairness decay, a floor controller arbitrating
+between them. That stays removed. What exists now is three interviewer roles — HR,
+Hiring Manager, Domain Specialist — that run **sequentially**: one round holds the floor
+for its whole time slice, the coordinator (`session/coordinator.py`) decides when it is
+finished, and the next round begins with an explicit spoken handover. Exactly one agent
+can speak because exactly one round is active, and the runtime's single speak path is
+unchanged. They share one guard, and the handoff between rounds is built once, frozen,
+and passed forward read-only — statements and open questions only, never ratings or
+impressions, so a later round cannot inherit an earlier one's opinion of the person.
+That is a coordinator, not a blackboard.
 
 ## Contracts that must not be broken
 

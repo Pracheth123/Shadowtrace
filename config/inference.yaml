@@ -13,23 +13,26 @@ groq:
   max_calls_per_turn: 3         # hard cap on model calls per live turn
   roles:
     # Fast speak path — lowest TTFT among tool-capable Groq chat models
-    live_interviewer: llama-3.1-8b-instant
+    live_interviewer: openai/gpt-oss-20b
     # Indexer agent — same fast tool-capable model; step limit keeps cost down
-    indexer: llama-3.1-8b-instant
+    indexer: openai/gpt-oss-20b
     # Evaluators — stronger tool-capable model for quote verification
-    evaluator: llama-3.3-70b-versatile
+    evaluator: openai/gpt-oss-120b
     # Roadmap agent — same quality tier as evaluators
-    roadmap: llama-3.3-70b-versatile
+    roadmap: openai/gpt-oss-120b
 
   # Stage 11 provider failover. On a hard (non-429) failure the client retries
   # the role once on its fallback model, then — if allowed — degrades to the
   # local mock so the session keeps going instead of dropping the candidate.
   # Every step is logged as a `fallback_used` event.
+  # gemma2-9b-it was decommissioned by Groq and returns 400
+  # model_decommissioned. It was still here, so the first real failover of the
+  # live interviewer failed with a hard error instead of recovering.
   failover_roles:
-    live_interviewer: gemma2-9b-it
-    indexer: gemma2-9b-it
-    evaluator: llama-3.1-8b-instant
-    roadmap: llama-3.1-8b-instant
+    live_interviewer: qwen/qwen3.8-27b
+    indexer: qwen/qwen3.8-27b
+    evaluator: qwen/qwen3.8-27b
+    roadmap: qwen/qwen3.8-27b
   failover_to_mock: true
 
 # Shared generation defaults (overridable per call)

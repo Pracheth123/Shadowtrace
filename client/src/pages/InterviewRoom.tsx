@@ -86,6 +86,11 @@ export function InterviewRoom({ session, onFinished }: InterviewRoomProps) {
           <Badge variant={session.lane === "text" ? "muted" : "secondary"}>
             {session.lane === "text" ? "text lane" : "voice"}
           </Badge>
+          {session.voiceInfo && session.voiceInfo.provider !== "deepgram" && (
+            <Badge variant="outline" title="Not a real provider session">
+              mock audio
+            </Badge>
+          )}
         </div>
         <p className={cn("text-sm", toneClasses[tone])} aria-live="polite">
           {statusText}
@@ -117,6 +122,18 @@ export function InterviewRoom({ session, onFinished }: InterviewRoomProps) {
         </CardPanel>
       </Card>
 
+      {/* What the candidate is saying right now, straight from interim STT. */}
+      {session.lane === "voice" && (session.interim || session.micActive) && (
+        <div className="rounded-lg border border-dashed border-input px-4 py-3">
+          <span className="mb-1 block text-xs uppercase tracking-wide text-muted-foreground">
+            You
+          </span>
+          <p className="min-h-[1.5rem] text-sm text-muted-foreground">
+            {session.interim || "Listening…"}
+          </p>
+        </div>
+      )}
+
       {session.lane === "voice" ? (
         <Card>
           <CardPanel className="pt-5">
@@ -128,14 +145,10 @@ export function InterviewRoom({ session, onFinished }: InterviewRoomProps) {
               }
             >
               <Waveform
+                stream={session.micStream}
                 active={session.running}
-                onError={(message) =>
-                  toastManager.add({
-                    title: "Microphone unavailable",
-                    description: message,
-                    tone: "error",
-                  })
-                }
+                muted={session.muted}
+                onToggleMute={session.toggleMute}
               />
             </Suspense>
           </CardPanel>
@@ -195,10 +208,22 @@ export function InterviewRoom({ session, onFinished }: InterviewRoomProps) {
               <Button
                 variant="outline"
                 disabled={!session.running}
-                onMouseDown={() => setTalking(true)}
-                onMouseUp={() => setTalking(false)}
-                onTouchStart={() => setTalking(true)}
-                onTouchEnd={() => setTalking(false)}
+                onMouseDown={() => {
+                  setTalking(true);
+                  session.setTalking(true);
+                }}
+                onMouseUp={() => {
+                  setTalking(false);
+                  session.setTalking(false);
+                }}
+                onTouchStart={() => {
+                  setTalking(true);
+                  session.setTalking(true);
+                }}
+                onTouchEnd={() => {
+                  setTalking(false);
+                  session.setTalking(false);
+                }}
               >
                 {talking ? "Listening…" : "Hold to talk"}
               </Button>

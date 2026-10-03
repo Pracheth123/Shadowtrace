@@ -1,5 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import {
+  MicrophoneDenied,
+  isCaptureSupported,
+  startCapture,
+  type CaptureHandle,
+} from "@/lib/audio-capture";
+import { PlaybackQueue, type ChunkMeta } from "@/lib/audio-playback";
+
 /**
  * The live session socket, lifted out of the old single-file App.
  *
@@ -17,6 +25,16 @@ import { useCallback, useEffect, useRef, useState } from "react";
  *
  * Env contract is untouched (`VITE_WS_HOST`): switching to `VITE_API_URL` is
  * part of the separate, still-unapproved deployment task.
+ *
+ * Stage 14 connects the voice path that previously did not exist:
+ *
+ *   - one microphone, opened on the Start gesture, shared with the waveform,
+ *     converted to PCM16 by an AudioWorklet and streamed as binary frames;
+ *   - synthesised speech arriving as an `audio_chunk` metadata frame followed
+ *     by its binary frame, decoded at the rate the metadata declares;
+ *   - `playback_ack` driven by the browser audio clock rather than by arrival,
+ *     because that value is where the transcript gets truncated on barge-in;
+ *   - barge-in stopping local playback as well as provider synthesis.
  */
 
 const WS_HOST = import.meta.env.VITE_WS_HOST || `${location.hostname}:8000`;
@@ -66,35 +84,36 @@ export function useSession() {
   const [pushToTalk, setPushToTalk] = useState(false);
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [lane, setLane] = useState<Lane>("voice");
+  // Live interim transcript, so the candidate can see they are being heard.
+  const [interim, setInterim] = useState("");
+  const [micActive, setMicActive] = useState(false);
+  const [muted, setMuted] = useState(false);
+  const [micStream, setMicStream] = useState<MediaStream | null>(null);
+  const [voiceInfo, setVoiceInfo] = useState<{
+    enabled: boolean;
+    provider: string;
+    targetSampleRate: number;
+  } | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
-  const playedMsRef = useRef(0);
-  const ackTimerRef = useRef<number | null>(null);
   const wakingTimerRef = useRef<number | null>(null);
-  const audioCtxRef = useRef<AudioContext | null>(null);
   const resumeTokenRef = useRef("");
   const endedRef = useRef(false);
   const triesRef = useRef(0);
   const utteranceIdRef = useRef("");
   const laneRef = useRef<Lane>("voice");
+  const captureRef = useRef<CaptureHandle | null>(null);
+  const playbackRef = useRef<PlaybackQueue | null>(null);
+  // The metadata frame that arrived immediately before the next binary frame.
+  // A WebSocket preserves send order, so this pairing is unambiguous.
+  const pendingMetaRef = useRef<ChunkMeta | null>(null);
+  const bargedRef = useRef(false);
 
   const addLog = useCallback((type: string, detail: string) => {
     setLogs((previous) => [...previous.slice(-60), { type, detail }]);
   }, []);
-
-  const stopAck = useCallback(() => {
-    if (ackTimerRef.current != null) {
-      window.clearInterval(ackTimerRef.current);
-      ackTimerRef.current = null;
-    }
-  }, []);
-
-  const clearWaking = useCallback(() => {
-    if (wakingTimerRef.current != null) {
-      window.clearTimeout(wakingTimerRef.current);
-      wakingTimerRef.current = null;
-    }
-  }, []);
+  const addLogRef = useRef<typeof addLog | null>(null);
+  addLogRef.current = addLog;
 
   const send = useCallback((payload: object) => {
     const socket = wsRef.current;
@@ -103,21 +122,63 @@ export function useSession() {
     }
   }, []);
 
-  /** Play a silence burst and advance the played-ms cursor. */
-  const playPcm = useCallback(async (buffer: ArrayBuffer) => {
-    const context =
-      audioCtxRef.current ?? new AudioContext({ sampleRate: 16000 });
-    audioCtxRef.current = context;
-    const pcm = new Int16Array(buffer);
-    const floats = new Float32Array(pcm.length);
-    for (let i = 0; i < pcm.length; i += 1) floats[i] = pcm[i] / 32768;
-    const audioBuffer = context.createBuffer(1, floats.length || 1, 16000);
-    audioBuffer.copyToChannel(floats, 0);
-    const source = context.createBufferSource();
-    source.buffer = audioBuffer;
-    source.connect(context.destination);
-    source.start();
-    playedMsRef.current += Math.round((floats.length / 16000) * 1000);
+  /** Lazily build the playback queue; its acks come from the audio clock. */
+  const playback = useCallback((): PlaybackQueue => {
+    if (!playbackRef.current) {
+      playbackRef.current = new PlaybackQueue({
+        onProgress: (progress) => {
+          send({
+            type: "playback_ack",
+            utterance_id: progress.utteranceId,
+            played_ms: progress.playedMs,
+            scheduled_ms: progress.scheduledMs,
+          });
+        },
+        onError: (message) => addLogRef.current?.("playback_error", message),
+      });
+    }
+    return playbackRef.current;
+  }, [send]);
+
+  const clearWaking = useCallback(() => {
+    if (wakingTimerRef.current != null) {
+      window.clearTimeout(wakingTimerRef.current);
+      wakingTimerRef.current = null;
+    }
+  }, []);
+
+  /** Open the microphone and start streaming frames. User-gesture only. */
+  const beginCapture = useCallback(async () => {
+    if (captureRef.current) return;
+    const handle = await startCapture({
+      onFrame: (frame) => {
+        const socket = wsRef.current;
+        if (socket && socket.readyState === WebSocket.OPEN) {
+          // Binary frame: raw PCM16 at the device rate. The server converts
+          // and declares the result to the provider.
+          socket.send(frame);
+        }
+      },
+      onError: (message) => addLog("audio_error", message),
+    });
+    captureRef.current = handle;
+    setMicStream(handle.stream);
+    setMicActive(true);
+    // Tell the server the real device rate rather than letting it assume.
+    send({
+      type: "audio_start",
+      sample_rate: handle.sampleRate,
+      channels: handle.channels,
+    });
+    addLog("audio_start", `mic ${handle.sampleRate} Hz, ${handle.channels} ch`);
+  }, [addLog, send]);
+
+  const endCapture = useCallback(async () => {
+    const handle = captureRef.current;
+    captureRef.current = null;
+    setMicActive(false);
+    setMicStream(null);
+    if (handle) await handle.stop();
   }, []);
 
   const attach = useCallback(
@@ -139,7 +200,16 @@ export function useSession() {
 
       socket.onmessage = async (event) => {
         if (typeof event.data !== "string") {
-          await playPcm(event.data as ArrayBuffer);
+          // Synthesised audio. Its format came in the metadata frame sent
+          // immediately before it; without that we would be guessing the rate,
+          // which is exactly the bug that made the interviewer sound slow.
+          const meta = pendingMetaRef.current;
+          pendingMetaRef.current = null;
+          if (!meta) {
+            addLog("audio_orphan", "audio frame arrived with no metadata");
+            return;
+          }
+          playback().enqueue(meta, event.data as ArrayBuffer);
           return;
         }
         const message = JSON.parse(event.data);
@@ -159,13 +229,86 @@ export function useSession() {
             setLane(message.lane);
             laneRef.current = message.lane;
           }
+          if (message.voice) {
+            setVoiceInfo({
+              enabled: Boolean(message.voice.enabled),
+              provider: String(message.voice.provider ?? "mock"),
+              targetSampleRate: Number(message.voice.target_sample_rate ?? 16000),
+            });
+          }
+          if (message.degraded) addLog("degraded", String(message.degraded));
           setStatus(message.resumed ? "resumed" : "ready");
           setStatusDetail("");
+          // The microphone opens only once the server has confirmed a voice
+          // session, so a text-lane or rejected session never prompts for it.
+          if (laneRef.current === "voice" && !captureRef.current) {
+            try {
+              await beginCapture();
+            } catch (error) {
+              const denied = error as MicrophoneDenied;
+              addLog("mic_denied", denied.message);
+              setStatus("unreachable");
+              setStatusDetail(
+                `${denied.message} ${denied.recovery ?? ""}`.trim(),
+              );
+            }
+          }
           return;
         }
 
         if (message.type === "turn_end") {
           setTurnCount((count) => count + 1);
+          setInterim("");
+          return;
+        }
+
+        // Live transcription, so the candidate can see they are being heard.
+        if (message.type === "partial") {
+          setInterim(String(message.text ?? ""));
+          return;
+        }
+
+        if (message.type === "audio_chunk") {
+          pendingMetaRef.current = {
+            utteranceId: String(message.utterance_id ?? ""),
+            encoding: String(message.encoding ?? "linear16"),
+            sampleRate: Number(message.sample_rate ?? 24000),
+            seq: Number(message.seq ?? 0),
+            bytes: Number(message.bytes ?? 0),
+          };
+          return;
+        }
+
+        if (message.type === "utterance_begin") {
+          bargedRef.current = false;
+          utteranceIdRef.current = String(message.utterance_id ?? "");
+          playback().beginUtterance(utteranceIdRef.current);
+          return;
+        }
+
+        if (message.type === "utterance_end") {
+          // Synthesis finished. Playback may not have: the queue keeps
+          // reporting until the audio clock says it drained.
+          playback().endUtterance();
+          return;
+        }
+
+        if (message.type === "stop_playback") {
+          // The server cleared the provider; this is the browser half.
+          playback().stopAll();
+          pendingMetaRef.current = null;
+          return;
+        }
+
+        if (message.type === "voice_error") {
+          addLog("voice_error", String(message.detail ?? message.reason ?? ""));
+          setStatusDetail(String(message.detail ?? "Voice is unavailable."));
+          setStatus("unreachable");
+          return;
+        }
+
+        if (message.type === "voice_warning") {
+          addLog("voice_warning", String(message.detail ?? ""));
           return;
         }
 
@@ -181,31 +324,21 @@ export function useSession() {
               persona: message.persona ?? null,
             });
           }
-          if (message.utterance_id) {
-            utteranceIdRef.current = message.utterance_id;
-            playedMsRef.current = 0;
-            stopAck();
-            if (laneRef.current === "voice") {
-              ackTimerRef.current = window.setInterval(() => {
-                send({
-                  type: "playback_ack",
-                  played_ms: playedMsRef.current,
-                  utterance_id: message.utterance_id,
-                });
-              }, 100);
-            }
-          }
+          if (message.utterance_id) utteranceIdRef.current = message.utterance_id;
           return;
         }
 
         if (message.type === "agent_utterance_end") {
-          stopAck();
+          // Acknowledgements are driven by the playback queue's audio clock,
+          // not by this event: the server finishing a line says nothing about
+          // whether the candidate has heard it yet.
           return;
         }
 
         if (message.type === "session_complete") {
           endedRef.current = true;
-          stopAck();
+          playbackRef.current?.stopAll();
+          void endCapture();
           setStatus("complete");
           setRunning(false);
         }
@@ -213,7 +346,7 @@ export function useSession() {
 
       socket.onclose = () => {
         clearWaking();
-        stopAck();
+        playbackRef.current?.stopAll();
         if (endedRef.current || !resumeTokenRef.current) {
           if (!endedRef.current) setStatus("unreachable");
           setRunning(false);
@@ -241,7 +374,7 @@ export function useSession() {
         if (socket.readyState !== WebSocket.OPEN) setStatus("waking");
       };
     },
-    [addLog, clearWaking, playPcm, send, stopAck],
+    [addLog, beginCapture, clearWaking, endCapture, playback, send],
   );
 
   const start = useCallback(
@@ -256,7 +389,16 @@ export function useSession() {
       triesRef.current = 0;
       setLane(options.lane);
       laneRef.current = options.lane;
+      setInterim("");
+      setMuted(false);
+      bargedRef.current = false;
       setRunning(true);
+      if (options.lane === "voice") {
+        // Must happen inside the click. An AudioContext created outside a user
+        // gesture starts suspended and every scheduled buffer is silent, which
+        // is indistinguishable from a broken provider.
+        void playback().unlock();
+      }
       attach(new WebSocket(WS_URL), {
         type: "session_start",
         lane: options.lane,
@@ -265,35 +407,68 @@ export function useSession() {
         ...(options.packId ? { pack_id: options.packId } : {}),
       });
     },
-    [attach],
+    [attach, playback],
   );
 
   const end = useCallback(() => {
     endedRef.current = true;
     send({ type: "session_end" });
-    stopAck();
+    playbackRef.current?.stopAll();
+    void endCapture();
     setRunning(false);
-  }, [send, stopAck]);
+  }, [endCapture, send]);
 
   const bargeIn = useCallback(
     (held?: boolean) => {
+      if (bargedRef.current) return; // one interruption per utterance
+      bargedRef.current = true;
+      // Stop local audio *first* and use the audio clock's answer as the
+      // played position. Reporting a scheduled figure here would truncate the
+      // transcript past what the candidate actually heard.
+      const audible = playbackRef.current?.stopAll() ?? 0;
+      pendingMetaRef.current = null;
       send({
         type: "barge_in",
         utterance_id: utteranceIdRef.current,
-        played_ms: playedMsRef.current,
+        played_ms: audible,
         // Only meaningful under push-to-talk; the server ignores an unheld
         // barge-in in that mode.
         held: pushToTalk ? held : undefined,
       });
-      stopAck();
+      addLog("barge_in", `stopped playback at ${audible} ms audible`);
     },
-    [pushToTalk, send, stopAck],
+    [addLog, pushToTalk, send],
   );
 
   const togglePushToTalk = useCallback(() => {
     setPushToTalk((on) => {
       const next = !on;
       send({ type: "push_to_talk", on: next });
+      // Turning push-to-talk on mutes the stream until the key is held, so the
+      // button controls what actually leaves the machine.
+      captureRef.current?.setMuted(next);
+      setMuted(next);
+      return next;
+    });
+  }, [send]);
+
+  /** Hold-to-talk: unmute while held, re-mute on release and close the turn. */
+  const setTalking = useCallback(
+    (talking: boolean) => {
+      if (!pushToTalk) return;
+      captureRef.current?.setMuted(!talking);
+      setMuted(!talking);
+      send({ type: "mute", muted: !talking });
+      if (!talking) send({ type: "answer_done" });
+    },
+    [pushToTalk, send],
+  );
+
+  const toggleMute = useCallback(() => {
+    setMuted((on) => {
+      const next = !on;
+      captureRef.current?.setMuted(next);
+      send({ type: "mute", muted: next });
       return next;
     });
   }, [send]);
@@ -312,13 +487,18 @@ export function useSession() {
 
   useEffect(
     () => () => {
-      stopAck();
       clearWaking();
       endedRef.current = true;
       wsRef.current?.close();
-      void audioCtxRef.current?.close();
+      // Release the microphone track, the worklet and both audio contexts.
+      // Leaving them open keeps the browser's recording indicator lit after the
+      // interview has finished.
+      void playbackRef.current?.close();
+      void captureRef.current?.stop();
+      captureRef.current = null;
+      playbackRef.current = null;
     },
-    [clearWaking, stopAck],
+    [clearWaking],
   );
 
   return {
@@ -330,10 +510,19 @@ export function useSession() {
     pushToTalk,
     logs,
     lane,
+    // Stage 14 voice surface.
+    interim,
+    micActive,
+    muted,
+    micStream,
+    voiceInfo,
+    captureSupported: isCaptureSupported(),
     start,
     end,
     bargeIn,
     togglePushToTalk,
+    setTalking,
+    toggleMute,
     answer,
   };
 }

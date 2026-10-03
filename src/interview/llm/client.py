@@ -75,15 +75,56 @@ class GroqModelClient:
         session_id: str = "",
         api_key: str | None = None,
         config: dict | None = None,
+        settings=None,
     ) -> None:
         load_dotenv()
         self._cfg = config if config is not None else _load_llm_config()
         groq = self._cfg.get("groq", {})
-        self._api_key = (api_key if api_key is not None else groq_api_key()) or ""
-        self._base_url = groq.get("base_url", GROQ_BASE_URL)
-        self._roles: dict[str, str] = dict(groq.get("roles") or {})
+
+        # Stage 14: the validated settings object is the source of truth for
+        # model ids. It rejects models the provider has withdrawn, which the
+        # YAML could not — the first live failover of the interviewer went to
+        # `gemma2-9b-it` and came back 400 model_decommissioned. YAML now only
+        # fills gaps.
+        if settings is None and config is None:
+            try:
+                from interview.config import get_settings
+
+                settings = get_settings()
+            except Exception:  # noqa: BLE001 — YAML-only operation stays valid
+                settings = None
+        self._settings = settings
+
+        if api_key is not None:
+            self._api_key = api_key
+        elif settings is not None and settings.has_groq:
+            self._api_key = settings.groq_api_key.get_secret_value()
+        else:
+            self._api_key = groq_api_key() or ""
+
+        self._base_url = (
+            settings.groq_base_url if settings is not None
+            else groq.get("base_url", GROQ_BASE_URL)
+        )
+        if settings is not None:
+            self._roles: dict[str, str] = {
+                "live_interviewer": settings.model_live_interviewer,
+                "indexer": settings.model_indexer,
+                "evaluator": settings.model_evaluator,
+                "roadmap": settings.model_roadmap,
+            }
+        else:
+            self._roles = dict(groq.get("roles") or {})
         self._max_retries = int(groq.get("max_retries_on_429", 5))
-        self._failover_roles: dict[str, str] = dict(groq.get("failover_roles") or {})
+        if settings is not None:
+            self._failover_roles: dict[str, str] = {
+                "live_interviewer": settings.model_fallback_fast,
+                "indexer": settings.model_fallback_fast,
+                "evaluator": settings.model_fallback_quality,
+                "roadmap": settings.model_fallback_quality,
+            }
+        else:
+            self._failover_roles = dict(groq.get("failover_roles") or {})
         self._failover_to_mock = bool(groq.get("failover_to_mock", True))
         self._max_per_turn = int(groq.get("max_calls_per_turn", 3))
         self._limiter = get_shared_limiter(int(groq.get("requests_per_minute", 30)))
@@ -219,6 +260,7 @@ class GroqModelClient:
         tools: list[dict[str, Any]] | None = None,
         max_tokens: int | None = None,
         temperature: float | None = None,
+        json_object: bool = False,
     ) -> dict[str, Any]:
         """Non-streaming chat (tool loops for indexer / evaluator / roadmap)."""
         model = self.model_for(role)
@@ -238,6 +280,7 @@ class GroqModelClient:
                 temperature=(
                     self._default_temperature if temperature is None else temperature
                 ),
+                json_object=json_object,
             )
             ok = True
             return result
@@ -264,6 +307,7 @@ class GroqModelClient:
                 temperature=(
                     self._default_temperature if temperature is None else temperature
                 ),
+                json_object=json_object,
             )
             ok = True
             return result
@@ -380,6 +424,7 @@ class GroqModelClient:
         tools: list[dict] | None,
         max_tokens: int,
         temperature: float,
+        json_object: bool = False,
     ) -> dict[str, Any]:
         client = self._openai()
         delay = 0.5
@@ -395,6 +440,10 @@ class GroqModelClient:
                 if tools:
                     kwargs["tools"] = tools
                     kwargs["tool_choice"] = "auto"
+                if json_object:
+                    # Server-side JSON mode. Without it these models prepend
+                    # prose to the object, which the proposal parser rejects.
+                    kwargs["response_format"] = {"type": "json_object"}
                 resp = await client.chat.completions.create(**kwargs)
                 choice = resp.choices[0]
                 msg = choice.message

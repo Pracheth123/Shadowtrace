@@ -1,5 +1,57 @@
 # Tasks
 
+## 2026-10-04 — Stage 13: three distinct interviewer roles — PARTIAL
+
+Verified: 224 passed, 1 skipped. New: `tests/test_stage13_roles.py` (47 tests).
+
+Done:
+
+- [x] `session/roles.py` — HR, Hiring Manager, Domain Specialist as separate
+      specs: disjoint competencies, own depth caps (2/3/4), own rubric ids, own
+      voices, own model instructions, own probe templates.
+- [x] Per-role anchor extraction. The same answer yields three different spans
+      (career motive / owned decision / thing built), so the three roles ask
+      three genuinely different follow-ups. Proven by
+      `test_same_answer_produces_three_different_follow_ups`.
+- [x] Nine role packs as data: `hr-core`, `manager-core`, and
+      `specialist-{software,hardware,sales,marketing,operations,finance,generic}`.
+      Each specialist pack asks profession-specific questions — verified all six
+      produce distinct text.
+- [x] Pack schema extended with a versioned `rubric` block. Legacy packs keep
+      the four-dimension weights and still load.
+- [x] `session/interview_config.py` — validated role/seniority/round/lane/
+      context config. Background required; **repository optional everywhere**.
+      Generic coverage is a labelled choice, not a silent software fallback.
+- [x] `session/coordinator.py` — sequential rounds, normalised time allocation,
+      source-linked handoffs carrying statements + open questions and
+      **refusing** to carry scores/ratings/impressions.
+- [x] `evaluation/rubrics.py` — level-based assessment replacing the
+      support-count ratio. `insufficient_evidence` is not a low score, scored
+      dimensions must cite evidence, unverifiable quotes downgrade the
+      judgement, weights renormalise over assessed dimensions only.
+- [x] `ModelProposer` — one bounded model call for the **active round only**,
+      role instructions + delimited candidate data, validated structured
+      proposal; malformed replies fall back to a real question and are counted.
+- [x] Fixed `depth_on_current < 1`, which capped every follow-up at one level
+      regardless of pack or intensity.
+- [x] Fixed single-round time allocation (an HR-only interview was getting 25%
+      of the budget and would have ended a quarter of the way in).
+- [x] CLAUDE.md "three live personas" restriction narrowed: contention is still
+      banned, sequential rounds sharing one guard are sanctioned.
+
+Not done — the workflow is not yet connected end to end:
+
+- [ ] `runtime.py` / `panel.py` still run the old single `propose()`; the
+      coordinator and proposers are not wired into the live session.
+- [ ] `server.py` has no interview-config endpoint and no intake wiring; the
+      frontend upload still does not reach intake.
+- [ ] Evaluation pipeline does not yet emit `RoundScore`s; the dashboard still
+      reads fixture `dashboard.json`.
+- [ ] Frontend setup has no role/seniority/round selection; the interview room
+      does not display the active round or transitions.
+- [ ] Deepgram adapters (stage 12) still not wired; `FakeSpeakPort` is injected.
+- [ ] No live provider validation of any kind.
+
 ## 2026-10-04 — Stage 12: real voice providers (Deepgram) — PARTIAL
 
 Evidence: `docs/decisions/stage12_voice_providers.md`

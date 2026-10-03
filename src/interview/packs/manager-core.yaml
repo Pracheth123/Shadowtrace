@@ -1,0 +1,61 @@
+pack_id: manager-core
+title: Hiring manager round
+round: hiring_manager
+time_budget_s: 600
+spine:
+  - id: owned-end-to-end
+    text: "Tell me about something you owned end to end. What was your part specifically?"
+    competency: ownership
+  - id: hard-call
+    text: "Tell me about a decision you made with incomplete information."
+    competency: judgement
+  - id: disagreement
+    text: "Tell me about a time you disagreed with someone you worked with, and what you did."
+    competency: collaboration
+  - id: setback
+    text: "Tell me about something that did not work out, and what you changed afterward."
+    competency: reflection
+  - id: difference-made
+    text: "What is the piece of work you would point to as having made the clearest difference?"
+    competency: impact
+competencies:
+  - id: ownership
+    label: Ownership
+  - id: judgement
+    label: Judgement
+  - id: collaboration
+    label: Collaboration
+  - id: impact
+    label: Impact
+  - id: reflection
+    label: Reflection
+probe_policy:
+  max_depth: 3
+  seconds_per_spine: 95
+  min_probe_s: 45
+rubric:
+  version: manager.v1
+  dimensions:
+    - id: decision_reasoning
+      label: Decision reasoning
+      weight: 0.25
+      kind: reasoning
+    - id: personal_contribution
+      label: Personal contribution
+      weight: 0.25
+      kind: evidence
+    - id: collaboration
+      label: Collaboration
+      weight: 0.20
+      kind: reasoning
+    - id: impact
+      label: Impact
+      weight: 0.15
+      kind: evidence
+    - id: learning
+      label: Learning from setbacks
+      weight: 0.15
+      kind: reasoning
+# `impact` is kind: evidence, not a metric check. A qualitative outcome counts
+# when the candidate can say how they knew it worked; the absence of a number
+# is not the absence of impact.

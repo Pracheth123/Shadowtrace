@@ -22,8 +22,10 @@ module exists to enforce:
 Verified against provider documentation on 2026-10-04 (see
 docs/decisions/stage12_voice_providers.md for the fetch log):
 
-  - Groq production models: llama-3.1-8b-instant, llama-3.3-70b-versatile,
-    openai/gpt-oss-20b, openai/gpt-oss-120b. `gemma2-9b-it` is gone.
+  - Groq: model availability is per-account, so it is read from GET /models
+    rather than from the docs. This key has no llama models at all; the
+    documented `llama-3.1-8b-instant` returns 404. `gemma2-9b-it` is withdrawn
+    everywhere and returns 400 model_decommissioned.
   - Deepgram STT: nova-3 supports `keyterm` (500-token budget); the older
     `keywords` parameter is Nova-2 only and is silently ignored by nova-3.
   - Deepgram TTS: aura-2-*-en is the current generation.
@@ -53,16 +55,28 @@ RETIRED_GROQ_MODELS = frozenset(
     }
 )
 
-# Groq production models as documented. Preview models are deliberately absent:
-# the live speak path should not sit on an id that can be pulled without notice.
+# Chat models this deployment's key can actually reach, confirmed by calling
+# GET /models rather than by reading the docs. The published model list and a
+# given account's entitlements are not the same thing: the documented
+# `llama-3.1-8b-instant` returns 404 model_not_found for this key, which is why
+# the first real interviewer call fell through to the failover.
+#
+# Re-check with: python tools/check_models.py
 GROQ_PRODUCTION_MODELS = frozenset(
     {
-        "llama-3.1-8b-instant",
-        "llama-3.3-70b-versatile",
         "openai/gpt-oss-20b",
         "openai/gpt-oss-120b",
+        "openai/gpt-oss-safeguard-20b",
+        "qwen/qwen3.8-27b",
+        "allam-2-7b",
     }
 )
+
+# `gpt-oss` models emit reasoning tokens before their visible content. A 220
+# token budget was consumed entirely by reasoning, so the reply came back as an
+# empty string with finish_reason="length" and every proposal was rejected as
+# unparseable. Structured proposals need real headroom.
+STRUCTURED_REPLY_MAX_TOKENS = 800
 
 # Deepgram encodings that are raw, framed PCM — the only ones this app sends,
 # because it controls the conversion itself and declares what it sends.
@@ -105,23 +119,25 @@ class Settings(BaseSettings):
         default="https://api.groq.com/openai/v1", alias="GROQ_BASE_URL"
     )
     model_live_interviewer: str = Field(
-        default="llama-3.1-8b-instant", alias="MODEL_LIVE_INTERVIEWER"
+        default="openai/gpt-oss-20b", alias="MODEL_LIVE_INTERVIEWER"
     )
-    model_indexer: str = Field(default="llama-3.1-8b-instant", alias="MODEL_INDEXER")
+    model_indexer: str = Field(default="openai/gpt-oss-20b", alias="MODEL_INDEXER")
     model_evaluator: str = Field(
-        default="llama-3.3-70b-versatile", alias="MODEL_EVALUATOR"
+        default="openai/gpt-oss-120b", alias="MODEL_EVALUATOR"
     )
     model_roadmap: str = Field(
-        default="llama-3.3-70b-versatile", alias="MODEL_ROADMAP"
+        default="openai/gpt-oss-120b", alias="MODEL_ROADMAP"
     )
     # Second model on the same provider. It covers a withdrawn or overloaded
     # model; it does NOT cover a provider-wide outage, which is why the runtime
     # also has to surface a degraded state to the candidate.
+    # A different model *family* on purpose. Falling back from gpt-oss-20b to
+    # gpt-oss-120b would share whatever made the first one fail.
     model_fallback_fast: str = Field(
-        default="openai/gpt-oss-20b", alias="MODEL_FALLBACK_FAST"
+        default="qwen/qwen3.8-27b", alias="MODEL_FALLBACK_FAST"
     )
     model_fallback_quality: str = Field(
-        default="openai/gpt-oss-120b", alias="MODEL_FALLBACK_QUALITY"
+        default="qwen/qwen3.8-27b", alias="MODEL_FALLBACK_QUALITY"
     )
     groq_requests_per_minute: int = Field(
         default=30, ge=1, alias="GROQ_REQUESTS_PER_MINUTE"
@@ -130,6 +146,11 @@ class Settings(BaseSettings):
     groq_timeout_s: float = Field(default=12.0, gt=0, alias="GROQ_TIMEOUT_S")
     max_model_calls_per_turn: int = Field(
         default=3, ge=1, le=10, alias="MAX_MODEL_CALLS_PER_TURN"
+    )
+    # Headroom for a structured proposal, including reasoning tokens.
+    structured_reply_max_tokens: int = Field(
+        default=STRUCTURED_REPLY_MAX_TOKENS, ge=200, le=4000,
+        alias="STRUCTURED_REPLY_MAX_TOKENS",
     )
 
     # ------------------------------------------------------------------
@@ -196,6 +217,42 @@ class Settings(BaseSettings):
     # Validation
     # ------------------------------------------------------------------
 
+    @model_validator(mode="before")
+    @classmethod
+    def _clean_env_values(cls, data):
+        """
+        Normalise raw environment input before field parsing.
+
+        Two things real `.env` files do that strict parsing rejects:
+
+        - **Trailing comments.** `APP_ENV=dev   # dev | test | prod` is how
+          people actually annotate a copied template, and dotenv keeps the
+          comment as part of the value. An un-quoted `#` starts a comment.
+        - **Empty values.** `ALLOW_MOCK_PROVIDERS=` means "I did not set this",
+          but an empty string is not a boolean and raised a validation error at
+          startup. Empty entries are dropped so the field default applies.
+
+        Quoted values are left exactly as given, so a password containing `#`
+        survives as long as it is quoted.
+        """
+        if not isinstance(data, dict):
+            return data
+        cleaned = {}
+        for key, value in data.items():
+            if not isinstance(value, str):
+                cleaned[key] = value
+                continue
+            text = value.strip()
+            if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+                cleaned[key] = text[1:-1]
+                continue
+            if "#" in text:
+                text = text.split("#", 1)[0].strip()
+            if text == "":
+                continue  # unset: let the default stand
+            cleaned[key] = text
+        return cleaned
+
     @field_validator("log_level")
     @classmethod
     def _known_log_level(cls, value: str) -> str:
@@ -219,8 +276,8 @@ class Settings(BaseSettings):
             raise ValueError("a model id may not be blank")
         if name in RETIRED_GROQ_MODELS:
             raise ValueError(
-                f"{name!r} has been withdrawn by Groq. Current production models: "
-                + ", ".join(sorted(GROQ_PRODUCTION_MODELS))
+                f"{name!r} has been withdrawn by Groq. Models reachable with "
+                "this deployment's key: " + ", ".join(sorted(GROQ_PRODUCTION_MODELS))
             )
         return name
 

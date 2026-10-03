@@ -50,9 +50,9 @@ never in the system prompt (CLAUDE.md §7 — repo/resume content is data, not i
 
 | Model | TTFT p50 | TTFT p95 | First-sentence p50 | First-sentence p95 |
 |---|---|---|---|---|
-| mock-fast (50ms delay, 60 t/s) | 62 ms | 63 ms | 155 ms | 156 ms |
-| mock-medium (150ms delay, 30 t/s) | 155 ms | 157 ms | 295 ms | 299 ms |
-| mock-slow (300ms delay, 15 t/s) | 309 ms | 313 ms | 541 ms | 546 ms |
+| mock-fast (50ms delay, 60 t/s) | 62 ms | 63 ms | 155 ms | 157 ms |
+| mock-medium (150ms delay, 30 t/s) | 157 ms | 159 ms | 298 ms | 302 ms |
+| mock-slow (300ms delay, 15 t/s) | 312 ms | 315 ms | 548 ms | 552 ms |
 
 
 ## Measured TTS first-chunk (from tools/bench_tts.py)

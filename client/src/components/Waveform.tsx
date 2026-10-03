@@ -1,150 +1,120 @@
-import { useEffect, useRef, useState } from "react";
-import { MicIcon, PauseIcon } from "lucide-react";
+import { useEffect, useRef } from "react";
+import { MicIcon, MicOffIcon } from "lucide-react";
 import WaveSurfer from "wavesurfer.js";
-import RecordPlugin from "wavesurfer.js/dist/plugins/record.esm.js";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 /**
- * Live mic waveform, converted from the vanilla WaveSurfer example.
+ * Live microphone level, drawn from the session's own stream.
  *
- * Two deliberate departures from that example:
+ * Rewritten at stage 14. It previously used WaveSurfer's RecordPlugin to open
+ * its **own** `getUserMedia` capture purely to draw a meter — a second,
+ * independent recording of the candidate that was never sent anywhere, while
+ * the session socket sent nothing at all. Two captures also means two
+ * permission prompts and two echo-cancellation contexts fighting each other.
  *
- *  1. **Visualisation only.** The original recorded a blob, rendered it back
- *     and offered a download link. Candidate audio already travels over the
- *     session WebSocket, so recording here would be a second, independent
- *     capture — and the download would hand out a copy of the interview. So
- *     `renderRecordedAudio: false`, and the `record-end` blob is dropped.
- *  2. **No mic <select>.** The example enumerated devices on mount, which
- *     triggers a permission prompt before the candidate has pressed anything.
- *     The browser's own picker handles device choice at grant time.
+ * Now it is a pure visualiser: it receives the one `MediaStream` the session
+ * already opened and renders its level. It never starts or stops capture, and
+ * it never touches the socket.
  *
- * Colours come from the palette: primary for the waveform, accent for played
- * progress.
+ * Colours come from the palette: primary for the waveform, accent for peaks.
  */
 
 const WAVE_COLOR = "#3d27ce"; // primary
-const PROGRESS_COLOR = "#443dff"; // accent
+const PEAK_COLOR = "#443dff"; // accent
 
 export type WaveformProps = {
-  /** Mirrors the parent's run state; false tears the recorder down. */
+  /** The session's microphone stream. Null before capture starts. */
+  stream: MediaStream | null;
   active: boolean;
-  onError?: (message: string) => void;
+  muted?: boolean;
+  onToggleMute?: () => void;
   className?: string;
 };
 
-function formatElapsed(ms: number) {
-  const minutes = Math.floor((ms % 3_600_000) / 60_000);
-  const seconds = Math.floor((ms % 60_000) / 1000);
-  return [minutes, seconds]
-    .map((unit) => String(unit).padStart(2, "0"))
-    .join(":");
-}
-
-export function Waveform({ active, onError, className }: WaveformProps) {
+export function Waveform({
+  stream,
+  active,
+  muted = false,
+  onToggleMute,
+  className,
+}: WaveformProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const waveRef = useRef<WaveSurfer | null>(null);
-  const recordRef = useRef<ReturnType<typeof RecordPlugin.create> | null>(null);
-  const [recording, setRecording] = useState(false);
-  const [paused, setPaused] = useState(false);
-  const [elapsedMs, setElapsedMs] = useState(0);
-  const [starting, setStarting] = useState(false);
+  const rafRef = useRef<number | null>(null);
+  const audioRef = useRef<{ context: AudioContext; analyser: AnalyserNode } | null>(
+    null,
+  );
 
-  // Build the instance once per mount. WaveSurfer writes into the DOM node, so
-  // creating it inside the render path would stack canvases on every update.
+  // The canvas. Created once per mount; WaveSurfer writes into the DOM node, so
+  // building it during render would stack canvases on every update.
   useEffect(() => {
     if (!hostRef.current) return;
-
     const wavesurfer = WaveSurfer.create({
       container: hostRef.current,
       height: 72,
       waveColor: WAVE_COLOR,
-      progressColor: PROGRESS_COLOR,
+      progressColor: PEAK_COLOR,
       cursorWidth: 0,
       barWidth: 2,
       barGap: 2,
       barRadius: 2,
+      interact: false,
     });
-
-    const record = wavesurfer.registerPlugin(
-      RecordPlugin.create({
-        renderRecordedAudio: false,
-        continuousWaveform: true,
-        continuousWaveformDuration: 30,
-      }),
-    );
-
-    record.on("record-progress", setElapsedMs);
-    record.on("record-end", () => {
-      // The blob is intentionally not kept. See the note above.
-      setRecording(false);
-      setPaused(false);
-    });
-
     waveRef.current = wavesurfer;
-    recordRef.current = record;
-
     return () => {
-      try {
-        if (record.isRecording() || record.isPaused()) record.stopRecording();
-      } catch {
-        // Already torn down; nothing to stop.
-      }
       wavesurfer.destroy();
       waveRef.current = null;
-      recordRef.current = null;
     };
   }, []);
 
-  // Stop cleanly when the parent ends the session.
+  // Analyse the shared stream. A separate AnalyserNode on the same stream is
+  // read-only: it does not consume the audio or interfere with the capture
+  // worklet that is feeding the socket.
   useEffect(() => {
-    if (active) return;
-    const record = recordRef.current;
-    if (record && (record.isRecording() || record.isPaused())) {
-      record.stopRecording();
-    }
-    setRecording(false);
-    setPaused(false);
-    setElapsedMs(0);
-  }, [active]);
+    if (!stream || !active) return;
 
-  const toggleRecording = async () => {
-    const record = recordRef.current;
-    if (!record) return;
+    const context = new AudioContext();
+    const source = context.createMediaStreamSource(stream);
+    const analyser = context.createAnalyser();
+    analyser.fftSize = 1024;
+    source.connect(analyser);
+    audioRef.current = { context, analyser };
 
-    if (record.isRecording() || record.isPaused()) {
-      record.stopRecording();
-      return;
-    }
+    const data = new Uint8Array(analyser.frequencyBinCount);
+    const history: number[] = [];
 
-    setStarting(true);
-    try {
-      await record.startRecording();
-      setRecording(true);
-      setPaused(false);
-    } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : "Could not access the microphone.";
-      onError?.(message);
-    } finally {
-      setStarting(false);
-    }
-  };
+    const tick = () => {
+      analyser.getByteTimeDomainData(data);
+      let sum = 0;
+      for (let i = 0; i < data.length; i += 1) {
+        const value = (data[i] - 128) / 128;
+        sum += value * value;
+      }
+      const rms = Math.sqrt(sum / data.length);
+      history.push(Math.min(1, rms * 3));
+      if (history.length > 400) history.shift();
+      // `interact: false` plus a peaks array renders the level history without
+      // WaveSurfer trying to own any audio.
+      waveRef.current?.load("", [history], 1);
+      rafRef.current = requestAnimationFrame(tick);
+    };
+    rafRef.current = requestAnimationFrame(tick);
 
-  const togglePause = () => {
-    const record = recordRef.current;
-    if (!record) return;
-    if (record.isPaused()) {
-      record.resumeRecording();
-      setPaused(false);
-    } else {
-      record.pauseRecording();
-      setPaused(true);
-    }
-  };
+    return () => {
+      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+      try {
+        source.disconnect();
+        analyser.disconnect();
+      } catch {
+        // Already torn down.
+      }
+      void context.close();
+      audioRef.current = null;
+    };
+  }, [stream, active]);
 
   return (
     <div className={cn("flex flex-col gap-3", className)}>
@@ -152,51 +122,29 @@ export function Waveform({ active, onError, className }: WaveformProps) {
         ref={hostRef}
         className={cn(
           "wave-host min-h-[72px] w-full overflow-hidden rounded-lg border border-border bg-background px-2",
-          !recording && "opacity-50",
+          (!active || !stream || muted) && "opacity-50",
         )}
       />
-
       <div className="flex items-center gap-2">
         <Button
           variant="ghost"
-          size="icon-lg"
-          onClick={toggleRecording}
-          disabled={!active || starting}
-          aria-label={recording ? "Stop recording" : "Start recording"}
+          size="icon"
+          onClick={onToggleMute}
+          disabled={!active || !stream}
+          aria-label={muted ? "Unmute microphone" : "Mute microphone"}
           className={cn(
             "rounded-full border border-border",
-            recording && "animate-pulse-ring bg-secondary text-primary",
+            !muted && active && stream && "animate-pulse-ring bg-secondary text-primary",
           )}
         >
-          <MicIcon />
+          {muted ? <MicOffIcon /> : <MicIcon />}
         </Button>
-
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={togglePause}
-          disabled={!recording}
-          aria-label={paused ? "Resume recording" : "Pause recording"}
-          className="rounded-full border border-border"
-        >
-          <PauseIcon />
-        </Button>
-
-        <p
-          aria-live="off"
-          className="font-mono text-sm tabular-nums text-muted-foreground"
-        >
-          {formatElapsed(elapsedMs)}
-        </p>
-
-        <p className="ml-auto text-xs text-muted-foreground">
-          {starting
-            ? "Requesting microphone…"
-            : paused
-              ? "Paused"
-              : recording
-                ? "Listening"
-                : "Mic idle"}
+        <p className="text-xs text-muted-foreground">
+          {!stream
+            ? "Microphone not started"
+            : muted
+              ? "Muted — nothing is being sent"
+              : "Listening"}
         </p>
       </div>
     </div>
