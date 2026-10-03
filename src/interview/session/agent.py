@@ -100,7 +100,7 @@ class LiveAgent:
         self._scripted = scripted_intents or {}
         self._max_tool_calls = max_tool_calls
 
-    async def run(self, *, turn_id: str, turn_index: int) -> Outcome:
+    async def run(self, *, turn_id: str, turn_index: int, commit: bool = True) -> Outcome:
         step = 0
         tool_calls = 0
 
@@ -165,8 +165,22 @@ class LiveAgent:
                 step += 1
 
         if decision.kind == "end":
-            await act("end_session", {}, force=True)
-            self._tools.commit(decision)
+            if commit:
+                await act("end_session", {}, force=True)
+                await self.commit_outcome(turn_id, decision)
+            await speak("end session")
+            return Outcome(kind="end", text="", decision=decision)
+
+        text = await self._speak_text(intent, decision, act)
+        if commit:
+            await self.commit_outcome(turn_id, decision)
+        await speak(f"{decision.kind} accepted")
+        return Outcome(kind=decision.kind, text=text, decision=decision)  # type: ignore[arg-type]
+
+    async def commit_outcome(self, turn_id: str, decision: Decision) -> None:
+        """Apply a prepared decision once the floor is granted."""
+        self._tools.commit(decision)
+        if decision.kind == "end":
             await self._bus.emit(
                 CoverageUpdate(
                     session_id=self._session_id,
@@ -176,17 +190,13 @@ class LiveAgent:
                     outstanding=list(self._tools.outstanding),
                 )
             )
-            await speak("end session")
-            return Outcome(kind="end", text="", decision=decision)
-
-        text = await self._speak_text(intent, decision, act)
-        self._tools.commit(decision)
+            return
         await self._bus.emit(
             QuestionPlanned(
                 session_id=self._session_id,
                 turn_id=turn_id,
                 producer="guard",
-                kind=decision.kind if decision.kind != "end" else "spine",
+                kind=decision.kind,  # type: ignore[arg-type]
                 competency=decision.competency or self._tools.pack.competencies[0].id,
                 target_depth=decision.target_depth,
             )
@@ -200,8 +210,6 @@ class LiveAgent:
                 outstanding=list(self._tools.outstanding),
             )
         )
-        await speak(f"{decision.kind} accepted")
-        return Outcome(kind=decision.kind, text=text, decision=decision)  # type: ignore[arg-type]
 
     def _step_limit_decision(self) -> Decision:
         """Tool loop hit the cap before a proposal. Enforce the next spine."""

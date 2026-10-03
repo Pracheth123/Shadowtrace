@@ -9,5 +9,5 @@ Active work is tracked in [`TASK.md`](TASK.md). Stage briefs are in
 
 ## Current focus
 
-Stage 6 exit criterion met (public repo intake + claims, fit/gap, exploration trace).  
-Next: Stage 7 — signal bus, turn controller, speculative loop (`docs/stages/stage-07-signal-bus-turn-controller.md`).
+Stage 7 exit path is in place on the mock stack (signals, turn controller, speculative draft, router). Recorded p50 is 0.2 ms because the draft is ready before endpoint; stale-draft rate on that session is 0.20. The ~450 ms / ~1.0 s figures are the live-vendor budget and are not measured here.  
+Next: Stage 8 — evaluation agents. Do not start them until a new stage brief is executed.

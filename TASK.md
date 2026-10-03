@@ -1,5 +1,18 @@
 # Tasks
 
+## 2026-10-03 — Stage 7: Signal bus, turn controller, speculative loop
+
+Brief: `docs/stages/stage-07-signal-bus-turn-controller.md`
+
+- [x] `signals.py` — claim hits, hedge vs own baseline, distress; under 50 ms/partial
+- [x] `turn_controller.py` — `likely_next` on a stable complete partial, `floor_granted` at endpoint
+- [x] Speculative `LiveAgent.run(commit=False)` while the candidate talks; commit and speak after the final
+- [x] Router: defended / conceded / unclear; one local refresh when the draft is stale
+- [x] `note_claim_status` logged as a tool result; scorer view is transcript text only
+- [x] Crowd-noise frames do not reach barge-in confidence
+- [x] Recorded `fixtures/sessions/stage7_speculative/` + `docs/decisions/stage7_waterfall.md`
+- [ ] Live-vendor waterfall (the ~450 ms / ~1.0 s budget). This recording is the mock path: p50 0.2 ms, stale-draft rate 0.20
+
 ## 2026-10-03 — Stage 6: Intake, indexer, fit
 
 Brief: `docs/stages/stage-06-intake-indexer-fit.md`

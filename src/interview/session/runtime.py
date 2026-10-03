@@ -24,15 +24,19 @@ from interview.events.schema import (
     AgentStep,
     DraftReady,
     FinalTranscript,
+    RouteDecision,
     SessionComplete,
     Truncate,
 )
 from interview.packs.model import PackLoadError, load_pack
-from interview.session.agent import LiveAgent
+from interview.session.agent import LiveAgent, Outcome, phrase_probe
 from interview.session.guard import Intent
 from interview.session.interviewer import LeadInterviewer
+from interview.session.router import concession_line, draft_is_stale, route_answer
+from interview.session.signals import ClaimHint, SignalExtractor, SignalReading
 from interview.session.tools import SessionTools, load_claims_fixture
 from interview.session.transcript import TranscriptWriter
+from interview.session.turn_controller import TurnController
 
 if TYPE_CHECKING:
     from interview.events.bus import EventBus
@@ -56,6 +60,15 @@ class SpeakPort(Protocol):
 
 
 OnWire = Callable[[dict], Awaitable[None]]
+
+
+@dataclass
+class PreparedDraft:
+    basis: str
+    outcome: Outcome
+    plain: str
+    concession: str
+    claim_hits: list[str]
 
 
 @dataclass
@@ -94,6 +107,15 @@ class LiveSession:
         self._end_after_turn = False
         self._agent: LiveAgent | None = None
         self._tools: SessionTools | None = None
+        self._controller: TurnController | None = None
+        self._extractor: SignalExtractor | None = None
+        self._drafts: dict[str, PreparedDraft] = {}
+        self._finished: set[str] = set()
+        self._turn_locks: dict[str, asyncio.Lock] = {}
+        self._spec_task: asyncio.Task | None = None
+        self.valid_drafts = 0
+        self.stale_drafts = 0
+        self._accepted_turn: str | None = None
         self._model_client = None
         if not self.config.use_mock_llm:
             from interview.llm.client import GroqModelClient
@@ -134,10 +156,29 @@ class LiveSession:
             kwargs["max_tool_calls"] = self.config.max_tool_calls
         self._tools = tools
         self._agent = LiveAgent(self.bus, self.session_id, tools, **kwargs)
+        self._extractor = SignalExtractor(
+            claims=[ClaimHint(id=claim.id, text=claim.text) for claim in tools.claims]
+        )
+        self._controller = TurnController(
+            self.bus,
+            self.session_id,
+            self._extractor,
+            on_likely=self._speculate,
+            on_barge=self._cancel_speculative,
+        )
+
+    def _turn_lock(self, turn_id: str) -> asyncio.Lock:
+        lock = self._turn_locks.get(turn_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._turn_locks[turn_id] = lock
+        return lock
 
     async def start(self) -> None:
         self._started_at = time.monotonic()
         self._bind_pack()
+        if self._controller is not None:
+            self._controller.attach()
         await self._speak_fixed(OPENER, turn_id="turn-opener")
 
     async def end(self, reason: str = "client") -> None:
@@ -198,9 +239,20 @@ class LiveSession:
             except asyncio.CancelledError:
                 pass
 
-        self._gen_task = asyncio.create_task(
-            self._generate_reply(event.turn_id or str(uuid.uuid4()))
-        )
+        turn_id = event.turn_id or str(uuid.uuid4())
+        self._accepted_turn = turn_id
+        if self._agent is not None:
+            async with self._turn_lock(turn_id):
+                self._finished.add(turn_id)
+                draft = self._drafts.pop(turn_id, None)
+            if draft is not None:
+                self._gen_task = asyncio.create_task(
+                    self._speak_prepared(draft, event, turn_id)
+                )
+            else:
+                self._gen_task = asyncio.create_task(self._generate_reply(turn_id))
+        else:
+            self._gen_task = asyncio.create_task(self._generate_reply(turn_id))
         # Reason: bus handlers are awaited; finishing the reply before the next
         # final_transcript keeps turn timelines waterfall-clean. Barge-in still
         # cancels via _gen_task.cancel().
@@ -278,20 +330,146 @@ class LiveSession:
                 {"type": "agent_utterance_end", "utterance_id": utterance_id}
             )
 
-    async def _speak_question(self, text: str, turn_id: str, utterance_id: str) -> None:
+    async def _speculate(self, turn_id: str, text: str, reading: SignalReading) -> None:
+        """Tool loop while the candidate is still talking. Do not speak yet."""
+        if self._agent is None or self._closed:
+            return
+        async with self._turn_lock(turn_id):
+            if turn_id in self._finished or turn_id in self._drafts:
+                return
+            self._spec_task = asyncio.current_task()
+            try:
+                if self._accepted_turn == turn_id:
+                    turn_index = max(0, self.turn_count - 1)
+                else:
+                    turn_index = self.turn_count
+                outcome = await self._agent.run(
+                    turn_id=turn_id,
+                    turn_index=turn_index,
+                    commit=False,
+                )
+            except asyncio.CancelledError:
+                await self.bus.emit(
+                    AgentStep(
+                        session_id=self.session_id,
+                        turn_id=turn_id,
+                        producer="session_runtime",
+                        step_index=0,
+                        band="live",
+                        phase="cancelled",
+                        summary="barge-in cancelled speculative step",
+                        cancelled=True,
+                    )
+                )
+                raise
+            finally:
+                self._spec_task = None
+            if turn_id in self._finished:
+                return
+            question = outcome.text
+            self._drafts[turn_id] = PreparedDraft(
+                basis=text,
+                outcome=outcome,
+                plain=question,
+                concession=concession_line(question) if question else "",
+                claim_hits=list(reading.claim_hits),
+            )
+
+    async def _cancel_speculative(self, _turn_id: str) -> None:
+        task = self._spec_task
+        if task is not None and task is not asyncio.current_task() and not task.done():
+            task.cancel()
+
+    async def _speak_prepared(
+        self,
+        draft: PreparedDraft,
+        event: FinalTranscript,
+        turn_id: str,
+    ) -> None:
+        if self._agent is None:
+            return
+        route = route_answer(event.text)
+        await self.bus.emit(
+            RouteDecision(
+                session_id=self.session_id,
+                turn_id=turn_id,
+                producer="turn_controller",
+                decision=route,
+            )
+        )
+        stale = draft_is_stale(draft.basis, event.text)
+        if stale:
+            self.stale_drafts += 1
+            await self.bus.emit(
+                AgentStep(
+                    session_id=self.session_id,
+                    turn_id=turn_id,
+                    producer="live_agent",
+                    step_index=0,
+                    band="live",
+                    phase="think",
+                    summary="stale draft; one short refresh",
+                )
+            )
+            if draft.outcome.kind == "probe":
+                text = phrase_probe(claim_text=None, transcript_anchor=event.text[:80])
+            else:
+                text = draft.plain
+            if route == "conceded":
+                text = concession_line(text)
+            variant = "concession" if route == "conceded" else "plain"
+        else:
+            self.valid_drafts += 1
+            variant = "concession" if route == "conceded" else "plain"
+            text = draft.concession if variant == "concession" else draft.plain
+        if draft.outcome.kind == "end" or not text:
+            self._end_after_turn = True
+            return
+        await self._agent.commit_outcome(turn_id, draft.outcome.decision)
+        await self._note_claim(turn_id, route, event.text, draft.claim_hits)
+        utterance_id = str(uuid.uuid4())
+        await self._speak_question(text, turn_id, utterance_id, variant=variant)
+
+    async def _note_claim(
+        self,
+        turn_id: str,
+        route: str,
+        quote: str,
+        claim_hits: list[str],
+    ) -> None:
+        if self._tools is None or not claim_hits or route == "unclear":
+            return
+        status = "held" if route == "defended" else "collapsed"
+        await self._tools.call(
+            self.bus,
+            session_id=self.session_id,
+            turn_id=turn_id,
+            step_index=0,
+            name="note_claim_status",
+            args={"id": claim_hits[0], "status": status, "quote": quote[:160]},
+        )
+
+    async def _speak_question(
+        self,
+        text: str,
+        turn_id: str,
+        utterance_id: str,
+        variant: str = "plain",
+    ) -> None:
         self.history.append({"role": "assistant", "content": text})
         first = text.strip()
         if "." in first:
             first_sentence = first.split(".")[0].strip() + "."
         else:
             first_sentence = first
+        spoken_variant = variant if variant == "concession" else "plain"
         await self.bus.emit(
             DraftReady(
                 session_id=self.session_id,
                 turn_id=turn_id,
                 producer="session_runtime",
                 first_sentence=first_sentence,
-                variant="plain",
+                variant=spoken_variant,
                 utterance_id=utterance_id,
             )
         )
@@ -330,7 +508,8 @@ class LiveSession:
             event.utterance_id, event.last_heard_word, event.word_index
         )
 
-    async def _on_barge_in(self, _event) -> None:
+    async def _on_barge_in(self, event) -> None:
+        await self._cancel_speculative(getattr(event, "turn_id", "") or "")
         await self._cancel_generation("barge_in")
 
     async def _cancel_generation(self, reason: str) -> None:

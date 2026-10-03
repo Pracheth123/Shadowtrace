@@ -34,7 +34,7 @@ from interview.mocks.fake_stt import FakeStt
 from interview.session.runtime import LiveSession, SessionConfig
 from interview.session.speak import FakeSpeakPort
 
-app = FastAPI(title="Shadowtrace — Stage 5")
+app = FastAPI(title="Shadowtrace — Stage 7")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -59,7 +59,7 @@ def _use_mock_llm() -> bool:
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "stage": 5}
+    return {"status": "ok", "stage": 7}
 
 
 @app.websocket("/ws/session")
@@ -227,7 +227,7 @@ async def root():
     return JSONResponse(
         {
             "service": "shadowtrace",
-            "stage": 4,
+            "stage": 7,
             "ws": "/ws/session",
             "client": "Run the Vite app in client/ and point WS to this server.",
         }
