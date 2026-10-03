@@ -1,0 +1,256 @@
+"""
+Event schemas for the AI mock interview platform — Stage 1.
+
+Every event carries: session_id, turn_id, seq, t_emit, producer, schema_version.
+Audio-in events  carry: t_audio_in  (position in candidate audio stream, seconds).
+Audio-out events carry: t_audio_out (position in agent audio stream, seconds).
+
+turn_id is None only on session-scoped events (currently: session_complete).
+seq and t_emit are assigned by the bus if the producer leaves them unset;
+replay passes them through untouched so the replayed log matches the fixture exactly.
+t_emit is seconds since session start (not a raw monotonic value).
+schema_version starts at 1; increment on every breaking change.
+"""
+
+from __future__ import annotations
+
+from typing import Annotated, Any, Literal, Union
+
+from pydantic import BaseModel, Field
+
+
+# ---------------------------------------------------------------------------
+# Nested types
+# ---------------------------------------------------------------------------
+
+
+class WordTiming(BaseModel):
+    """Word-level timing entry in a final transcript."""
+    word: str
+    start_ms: int
+    end_ms: int
+
+
+class WordTimestamp(BaseModel):
+    """Per-word offset within a single TTS chunk."""
+    word: str
+    offset_ms: int  # ms from the start of this chunk
+
+
+class PauseStats(BaseModel):
+    """Pause statistics computed over one candidate turn."""
+    count: int      # number of distinct pauses
+    max_ms: int     # longest single pause in ms
+    total_ms: int   # cumulative pause time in ms
+
+
+class DistressSignal(BaseModel):
+    """
+    Distress signal detected during a candidate turn.
+    score is a float in [0, 1] so the guardrail can be tuned against a
+    false-positive target.  A boolean cannot be tuned.
+    triggers lists the named detectors that contributed (e.g. 'long_silence',
+    'repeated_filler', 'low_confidence_cluster').
+    """
+    score: float
+    triggers: list[str]
+
+
+# ---------------------------------------------------------------------------
+# Common envelope (all events inherit from this)
+# ---------------------------------------------------------------------------
+
+
+class EventBase(BaseModel):
+    """Fields present on every event."""
+    schema_version: int = 1
+    session_id: str
+    # turn_id is None only for session-scoped events (currently: session_complete).
+    turn_id: str | None
+    # seq and t_emit may be left unset by the producer; the bus fills them in.
+    # Replay passes both through untouched so replayed logs match the fixture.
+    seq: int | None = None
+    t_emit: float | None = None  # seconds since session start
+    producer: str
+
+
+# ---------------------------------------------------------------------------
+# Individual event types
+# ---------------------------------------------------------------------------
+
+
+class SpeechStart(EventBase):
+    """Candidate began speaking; this event assigns turn_id for the whole turn."""
+    type: Literal["speech_start"] = "speech_start"
+    t_audio_in: float  # position in candidate audio stream (seconds)
+
+
+class Partial(EventBase):
+    """Incremental STT hypothesis, may be revised."""
+    type: Literal["partial"] = "partial"
+    t_audio_in: float
+    text: str
+    stable_until_ms: int  # ms into the stream up to which text is stable
+    revision: int          # increments each time a previous partial is revised
+
+
+class Endpoint(EventBase):
+    """VAD/STT detected end of candidate speech."""
+    type: Literal["endpoint"] = "endpoint"
+    t_audio_in: float
+    confidence: float  # [0, 1] endpoint confidence
+
+
+class FinalTranscript(EventBase):
+    """Committed, word-timed transcript for the completed turn."""
+    type: Literal["final_transcript"] = "final_transcript"
+    t_audio_in: float
+    text: str
+    word_timings: list[WordTiming]
+
+
+class Signals(EventBase):
+    """
+    Behavioural signals extracted from the candidate's turn.
+    Feeds the question planner only — never reaches the scorer.
+    """
+    type: Literal["signals"] = "signals"
+    claim_hits: list[str]       # claim IDs/labels from the Claims File (stage 6)
+    pause_stats: PauseStats
+    silence_ms: int             # total silence in the turn in ms
+    distress: DistressSignal | None  # None when no distress detected
+
+
+class LikelyNext(EventBase):
+    """
+    Speculative prediction of what the planner will choose next.
+    signal_snapshot is dict[str, Any] for now; stage 7 replaces it with a
+    typed SignalModel once the signal bus shape is fixed.
+    """
+    type: Literal["likely_next"] = "likely_next"
+    signal_snapshot: dict[str, Any]
+    persona: str | None = None  # None outside panel mode (stage 11)
+
+
+class DraftReady(EventBase):
+    """First sentence of the speculative agent response is ready."""
+    type: Literal["draft_ready"] = "draft_ready"
+    first_sentence: str
+    variant: Literal["plain", "concession"]
+    utterance_id: str           # unique within the session; ties to tts_chunk / truncate
+    persona: str | None = None  # None outside panel mode (stage 11)
+
+
+class FloorGranted(EventBase):
+    """The turn controller grants the floor to the agent."""
+    type: Literal["floor_granted"] = "floor_granted"
+    persona: str | None = None  # None outside panel mode (stage 11)
+
+
+class RouteDecision(EventBase):
+    """Turn controller verdict on how the candidate handled the probe."""
+    type: Literal["route_decision"] = "route_decision"
+    decision: Literal["defended", "conceded", "unclear"]
+
+
+class TtsChunk(EventBase):
+    """One audio chunk emitted by the TTS layer."""
+    type: Literal["tts_chunk"] = "tts_chunk"
+    t_audio_out: float          # position in agent audio stream (seconds)
+    audio_ref: str              # pointer to audio data; never inline bytes
+    word_timestamps: list[WordTimestamp]
+    utterance_id: str           # matches the draft_ready that spawned this utterance
+
+
+class PlaybackAck(EventBase):
+    """Client acknowledgement that audio has been played up to played_ms."""
+    type: Literal["playback_ack"] = "playback_ack"
+    t_audio_out: float
+    played_ms: int              # ms of agent audio confirmed played
+    utterance_id: str
+
+
+class BargeIn(EventBase):
+    """Candidate interrupted agent playback."""
+    type: Literal["barge_in"] = "barge_in"
+    t_audio_in: float
+    confidence: float           # [0, 1] barge-in confidence
+
+
+class Truncate(EventBase):
+    """
+    Instructs the TTS/playback layer to truncate the current utterance.
+    last_heard_word is the last word the client acknowledged playing.
+    word_index indexes word_timestamps in the tts_chunk for utterance_id —
+    NOT the candidate's transcript.  This is the truncation contract: the
+    transcript records exactly what was heard.
+    """
+    type: Literal["truncate"] = "truncate"
+    t_audio_out: float
+    last_heard_word: str
+    word_index: int             # index into tts_chunk.word_timestamps for utterance_id
+    utterance_id: str
+
+
+class QuestionPlanned(EventBase):
+    """Question planner has selected the next question."""
+    type: Literal["question_planned"] = "question_planned"
+    kind: Literal["spine", "probe"]
+    competency: str
+    target_depth: int           # follow-up depth level (0 = top level, 1+ = nested)
+
+
+class CoverageUpdate(EventBase):
+    """Planner reports current coverage state."""
+    type: Literal["coverage_update"] = "coverage_update"
+    covered: list[str]          # competency/claim IDs marked done
+    outstanding: list[str]      # still to address
+
+
+class IntensityChange(EventBase):
+    """Session intensity level changed."""
+    type: Literal["intensity_change"] = "intensity_change"
+    direction: Literal["up", "down"]
+    signal: str                  # human-readable reason for the change
+    from_level: Literal["coach", "realistic", "panel"]
+    to_level: Literal["coach", "realistic", "panel"]
+
+
+class SessionComplete(EventBase):
+    """
+    Session has ended.  This is the only session-scoped event; turn_id is None.
+    """
+    type: Literal["session_complete"] = "session_complete"
+    turn_id: None = None         # explicitly None — session-scoped, no turn
+    transcript_path: str
+    log_path: str
+    pack_id: str
+    intensity_history: list[dict[str, Any]]
+
+
+# ---------------------------------------------------------------------------
+# Discriminated union
+# ---------------------------------------------------------------------------
+
+Event = Annotated[
+    Union[
+        SpeechStart,
+        Partial,
+        Endpoint,
+        FinalTranscript,
+        Signals,
+        LikelyNext,
+        DraftReady,
+        FloorGranted,
+        RouteDecision,
+        TtsChunk,
+        PlaybackAck,
+        BargeIn,
+        Truncate,
+        QuestionPlanned,
+        CoverageUpdate,
+        IntensityChange,
+        SessionComplete,
+    ],
+    Field(discriminator="type"),
+]

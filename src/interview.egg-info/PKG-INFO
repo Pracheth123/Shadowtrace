@@ -1,0 +1,7 @@
+Metadata-Version: 2.4
+Name: interview
+Version: 0.1.0
+Requires-Python: >=3.11
+Requires-Dist: pydantic>=2.0
+Requires-Dist: pytest>=7.0
+Requires-Dist: pytest-asyncio>=0.23

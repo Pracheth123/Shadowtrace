@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "interview"
+version = "0.2.0"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.0",
+    "pytest>=7.0",
+    "pytest-asyncio>=0.23",
+    # Stage 2 — transport
+    "fastapi>=0.111",          # WebSocket session server (stage 4 onwards, pulled in now for transport)
+    "uvicorn[standard]>=0.29", # ASGI server for FastAPI
+    "aiofiles>=23.0",          # async file I/O for cached clip; never block the event loop
+    "pyyaml>=6.0",             # parse config/transport.yaml; thresholds must not live in code
+    "deepgram-sdk>=3.0",       # STT vendor 1, streaming WebSocket + keyword boost
+    "websockets>=12.0",        # low-level WS; deepgram SDK and session plumbing both need it
+    "numpy>=1.26",             # RMS energy for VAD; pure-Python audio math without native exts
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

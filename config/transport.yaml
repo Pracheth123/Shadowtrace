@@ -1,0 +1,52 @@
+# Transport layer configuration.
+# All tunable thresholds live here — never in code.
+# Change this file to retune without touching source.
+
+turn_detector:
+  silence_ms: 700          # ms of continuous silence before endpoint is considered
+  max_silence_ms: 2000     # hard ceiling — endpoint fires regardless of text state
+  extend_on_trailing: true # extend wait when partial ends with a conjunction/filler
+  trailing_words:          # words that signal the sentence is not yet done
+    - "and"
+    - "so"
+    - "because"
+    - "but"
+    - "or"
+    - "that"
+    - "which"
+    - "if"
+    - "then"
+    - "when"
+    - "although"
+    - "however"
+  extend_ms: 400           # extra ms added when a trailing_word is detected
+  min_speech_ms: 200       # turn must contain at least this much speech before endpointing
+  endpoint_confidence_min: 0.70  # below this, hold until max_silence_ms fires
+
+vad:
+  sample_rate: 16000       # Hz — only 16 kHz supported
+  frame_ms: 20             # ms per VAD frame (320 samples at 16 kHz)
+  energy_threshold: 0.015  # RMS threshold in [-1,1] normalised range; above = speech
+  speech_pad_ms: 100       # ms to keep VAD active after last loud frame (hang-over)
+  min_speech_frames: 3     # consecutive loud frames before speech_start fires
+
+barge_in:
+  confidence_threshold: 0.80  # VAD confidence required to declare a barge-in
+  min_duration_ms: 300        # candidate must speak for this long to count
+  cooldown_ms: 500            # ignore barge-in signals for this long after one fires
+
+stt:
+  vendor: deepgram             # deepgram | mock
+  model: nova-3
+  language: en-US
+  interim_results: true
+  smart_format: true
+  # keyword boost is supplied at runtime from the Claims File (stage 6); empty here
+
+audio:
+  sample_rate: 16000
+  channels: 1
+  bit_depth: 16
+  # cached clip played back after every turn (no LLM in stage 2)
+  cached_clip_path: fixtures/audio/cached_response.wav
+  playback_ack_interval_ms: 100  # client sends playback_ack this often

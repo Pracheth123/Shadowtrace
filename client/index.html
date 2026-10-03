@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Shadowtrace — Stage 2 Transport Test</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      min-height: 100vh;
+      background: #0d0f14;
+      color: #e2e8f0;
+      font-family: 'Inter', system-ui, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 2rem;
+    }
+    h1 { font-size: 1.5rem; font-weight: 600; color: #a78bfa; letter-spacing: 0.04em; }
+    #status {
+      font-size: 0.85rem;
+      color: #94a3b8;
+      min-height: 1.2em;
+      transition: color 0.2s;
+    }
+    #status.error { color: #f87171; }
+    #status.active { color: #34d399; }
+    #mic-btn {
+      width: 96px; height: 96px;
+      border-radius: 50%;
+      border: 3px solid #6d28d9;
+      background: #1e1b4b;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 2.4rem;
+      transition: background 0.2s, transform 0.1s, box-shadow 0.2s;
+      box-shadow: 0 0 0 0 #7c3aed55;
+    }
+    #mic-btn:hover { background: #2e1b6e; }
+    #mic-btn.recording {
+      background: #7c3aed;
+      box-shadow: 0 0 0 16px #7c3aed22;
+      animation: pulse 1.2s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%,100% { box-shadow: 0 0 0 0 #7c3aed44; }
+      50%      { box-shadow: 0 0 0 20px #7c3aed11; }
+    }
+    #log {
+      width: min(600px, 90vw);
+      max-height: 260px;
+      overflow-y: auto;
+      background: #111827;
+      border: 1px solid #1f2937;
+      border-radius: 10px;
+      padding: 1rem;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.75rem;
+      line-height: 1.6;
+      color: #94a3b8;
+    }
+    .log-event { color: #a78bfa; }
+    .log-text  { color: #e2e8f0; }
+  </style>
+</head>
+<body>
+  <h1>🎙 Shadowtrace Transport</h1>
+  <div id="status">Click the mic to begin</div>
+  <button id="mic-btn" title="Hold to speak">🎤</button>
+  <div id="log"></div>
+
+  <script>
+    const WS_URL = `ws://${location.host}/ws/session`;
+    const SAMPLE_RATE = 16000;
+    const FRAME_MS    = 20;
+    const FRAME_BYTES = SAMPLE_RATE * 2 * FRAME_MS / 1000; // 640 bytes
+
+    let ws, audioCtx, processor, source, stream;
+    let playbackAckInterval = null;
+    let utteranceId = null;
+    let playedMs = 0;
+    let isRecording = false;
+
+    const btn    = document.getElementById('mic-btn');
+    const status = document.getElementById('status');
+    const logEl  = document.getElementById('log');
+
+    function addLog(type, msg) {
+      const line = document.createElement('div');
+      line.innerHTML = `<span class="log-event">[${type}]</span> <span class="log-text">${msg}</span>`;
+      logEl.appendChild(line);
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function setStatus(msg, cls = '') {
+      status.textContent = msg;
+      status.className = cls;
+    }
+
+    // ── WebSocket ──────────────────────────────────────────────────────
+    function connect() {
+      ws = new WebSocket(WS_URL);
+      ws.binaryType = 'arraybuffer';
+
+      ws.onopen = () => {
+        setStatus('Connected — mic ready', 'active');
+        addLog('ws', 'Connected to session server');
+      };
+
+      ws.onclose = () => {
+        setStatus('Disconnected', 'error');
+        stopRecording();
+      };
+
+      ws.onerror = (e) => {
+        setStatus('WebSocket error', 'error');
+        addLog('error', String(e));
+      };
+
+      ws.onmessage = (evt) => {
+        if (typeof evt.data === 'string') {
+          const msg = JSON.parse(evt.data);
+          addLog(msg.type, JSON.stringify(msg));
+          if (msg.type === 'session_ready') {
+            setStatus('Session ready — tap mic to speak', 'active');
+          }
+        } else {
+          // Binary — audio chunk from server
+          playAudioChunk(evt.data);
+        }
+      };
+    }
+
+    // ── Mic capture ────────────────────────────────────────────────────
+    async function startRecording() {
+      if (isRecording) return;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: {
+          sampleRate: SAMPLE_RATE, channelCount: 1, echoCancellation: true,
+          noiseSuppression: true,
+        }});
+      } catch (e) {
+        setStatus('Mic access denied', 'error');
+        return;
+      }
+      audioCtx  = new AudioContext({ sampleRate: SAMPLE_RATE });
+      source    = audioCtx.createMediaStreamSource(stream);
+      processor = audioCtx.createScriptProcessor(320, 1, 1);
+
+      processor.onaudioprocess = (e) => {
+        if (!isRecording || !ws || ws.readyState !== WebSocket.OPEN) return;
+        const float32 = e.inputBuffer.getChannelData(0);
+        const int16   = new Int16Array(float32.length);
+        for (let i = 0; i < float32.length; i++) {
+          int16[i] = Math.max(-32768, Math.min(32767, float32[i] * 32768));
+        }
+        ws.send(int16.buffer);
+      };
+
+      source.connect(processor);
+      processor.connect(audioCtx.destination);
+      isRecording = true;
+      btn.classList.add('recording');
+      setStatus('Listening…', 'active');
+      addLog('mic', 'Recording started');
+    }
+
+    function stopRecording() {
+      if (!isRecording) return;
+      isRecording = false;
+      processor?.disconnect();
+      source?.disconnect();
+      audioCtx?.close();
+      stream?.getTracks().forEach(t => t.stop());
+      btn.classList.remove('recording');
+      setStatus('Processing…', '');
+    }
+
+    // ── Playback + ack ─────────────────────────────────────────────────
+    let playCtx = null;
+    let playedPcm = new Int16Array(0);
+
+    function playAudioChunk(buffer) {
+      if (!playCtx) playCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
+      const int16 = new Int16Array(buffer);
+      const float32 = new Float32Array(int16.length);
+      for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768.0;
+
+      const ab = playCtx.createBuffer(1, float32.length, SAMPLE_RATE);
+      ab.copyToChannel(float32, 0);
+      const src = playCtx.createBufferSource();
+      src.buffer = ab;
+      src.connect(playCtx.destination);
+      src.start();
+
+      // Accumulate played ms
+      const chunkMs = Math.round(float32.length / SAMPLE_RATE * 1000);
+      playedMs += chunkMs;
+
+      // Send playback_ack
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: 'playback_ack',
+          played_ms: playedMs,
+          utterance_id: utteranceId || 'unknown',
+        }));
+        addLog('playback_ack', `played_ms=${playedMs}`);
+      }
+    }
+
+    // ── Button wiring ──────────────────────────────────────────────────
+    btn.addEventListener('click', async () => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        connect();
+        setTimeout(startRecording, 600);
+      } else if (!isRecording) {
+        await startRecording();
+      } else {
+        stopRecording();
+      }
+    });
+
+    // Auto-connect on load
+    connect();
+  </script>
+</body>
+</html>
