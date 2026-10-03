@@ -15,13 +15,26 @@ dependencies = [
     "uvicorn[standard]>=0.29", # ASGI server for FastAPI
     "aiofiles>=23.0",          # async file I/O for cached clip; never block the event loop
     "pyyaml>=6.0",             # parse config/transport.yaml; thresholds must not live in code
-    "deepgram-sdk>=3.0",       # STT vendor 1, streaming WebSocket + keyword boost
-    "websockets>=12.0",        # low-level WS; deepgram SDK and session plumbing both need it
+    # deepgram-sdk removed at stage 12. It was declared here but never
+    # installed, and the adapter caught ImportError and continued in "no-op
+    # mode" — so a session produced no transcripts and still looked successful.
+    # The Deepgram /v1/listen and /v1/speak WebSocket protocols are spoken
+    # directly over `websockets` instead, which has a stable documented wire
+    # format and can be tested offline against a local fake server
+    # (tests/test_stage12_deepgram.py). See docs/decisions/stage12_voice_providers.md.
+    "websockets>=12.0",        # Deepgram STT/TTS sockets + session plumbing
     "numpy>=1.26",             # RMS energy for VAD; pure-Python audio math without native exts
     # Groq LLM access via OpenAI-compatible Chat Completions API
     # (base_url=https://api.groq.com/openai/v1). One SDK for streaming + tool calls.
     "openai>=1.40",
     "python-dotenv>=1.0",      # load GROQ_API_KEY from .env without committing secrets
+    # Stage 12: one validated settings object. Secrets become SecretStr, so a
+    # stray log line or JSON dump prints a mask instead of the key, and a
+    # retired model id or prod+mock combination fails at startup.
+    "pydantic-settings>=2.0",
+    # Stage 12: maintained PDF text extraction, replacing the hand-rolled
+    # routine that silently returned empty text for ordinary PDFs.
+    "pypdf>=4.2",
 ]
 
 [tool.setuptools.packages.find]

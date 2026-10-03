@@ -101,6 +101,9 @@ class Partial(EventBase):
     text: str
     stable_until_ms: int  # ms into the stream up to which text is stable
     revision: int          # increments each time a previous partial is revised
+    # Provider confidence for this hypothesis, when the provider reports one.
+    # None means "not reported", which is different from "zero confidence".
+    confidence: float | None = None
 
 
 class Endpoint(EventBase):
@@ -116,6 +119,18 @@ class FinalTranscript(EventBase):
     t_audio_in: float
     text: str
     word_timings: list[WordTiming]
+    confidence: float | None = None
+    # Which signal closed this turn. `speech_final` and `utterance_end` come
+    # from provider endpointing; `client` is an explicit end-of-answer from the
+    # UI (the text lane, or push-to-talk release); `timeout` is our own guard.
+    # Recorded because "the provider thought you stopped" and "you pressed
+    # send" are different claims about the same transcript.
+    boundary: Literal["speech_final", "utterance_end", "client", "timeout"] | None = (
+        None
+    )
+    # True when word_timings were derived rather than reported by the provider.
+    # Truncation accuracy depends on this, so it is not left to inference.
+    timings_estimated: bool = False
 
 
 class Signals(EventBase):
@@ -226,14 +241,29 @@ class TtsChunk(EventBase):
     audio_ref: str              # pointer to audio data; never inline bytes
     word_timestamps: list[WordTimestamp]
     utterance_id: str           # matches the draft_ready that spawned this utterance
+    # The browser cannot decode PCM without these. Defaults match the stage-3
+    # mock (16 kHz linear16) so pre-stage-12 logs stay valid; a real provider
+    # chunk carries whatever it actually produced.
+    sample_rate: int = 16000
+    encoding: str = "linear16"
+    # Deepgram TTS does not document word alignment, so word_timestamps on a
+    # real chunk are estimated from a speaking rate. Truncation is therefore
+    # word-approximate, and this flag is what says so in the log.
+    timings_estimated: bool = False
 
 
 class PlaybackAck(EventBase):
     """Client acknowledgement that audio has been played up to played_ms."""
     type: Literal["playback_ack"] = "playback_ack"
     t_audio_out: float
-    played_ms: int              # ms of agent audio confirmed played
+    played_ms: int              # ms of agent audio confirmed AUDIBLE, from the
+                                # browser audio clock — not merely received or
+                                # scheduled. See docs/decisions/stage12.
     utterance_id: str
+    # Total ms handed to the audio device for this utterance. played_ms <=
+    # scheduled_ms always; the gap is audio queued but not yet heard, which is
+    # exactly what a barge-in must discard.
+    scheduled_ms: int | None = None
 
 
 class BargeIn(EventBase):

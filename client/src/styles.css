@@ -1,109 +1,93 @@
-:root {
-  --bg: #12151c;
-  --panel: #1b2130;
-  --ink: #e8eef8;
-  --muted: #9aa8c0;
-  --accent: #3d8bfd;
-  --ok: #3ecf8e;
-  --line: #2c3548;
-  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Panel AI theme tokens.
+ *
+ * Declared as RGB channel triplets, not hex, so Tailwind's `<alpha-value>`
+ * works and `bg-primary/10` produces a real tint. The five brand values are
+ * verbatim from the chosen palette; the rest are derived from them.
+ */
+@layer base {
+  :root {
+    --background: 254 252 251; /* #fefcfb */
+    --foreground: 2 16 22; /*     #021016 */
+    --primary: 61 39 206; /*      #3d27ce */
+    --secondary: 255 219 237; /*  #ffdbed */
+    --accent: 68 61 255; /*       #443dff */
+
+    --primary-foreground: 254 252 251;
+    --secondary-foreground: 2 16 22;
+    --accent-foreground: 254 252 251;
+
+    /* Cards sit a shade above the cream page so panels read as surfaces. */
+    --card: 255 255 255;
+    --card-foreground: 2 16 22;
+
+    /* Warm neutrals with a trace of the primary hue, so greys never look
+       muddy next to the purple. */
+    --muted: 243 240 244;
+    --muted-foreground: 95 90 107;
+    --border: 230 226 234;
+    --input: 219 214 225;
+    --ring: 68 61 255;
+
+    --destructive: 215 38 61;
+    --destructive-foreground: 254 252 251;
+    --success: 15 138 95;
+    --warning: 184 110 0;
+
+    --radius: 0.75rem;
+
+    color-scheme: light;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-background font-sans text-foreground antialiased;
+    margin: 0;
+    min-height: 100vh;
+    font-feature-settings: "cv11", "ss01";
+  }
+
+  /* Stardom is a display face: headings carry it, nothing else. */
+  h1,
+  h2,
+  h3 {
+    @apply font-display font-normal tracking-tight;
+  }
+
+  h1 {
+    @apply text-3xl sm:text-4xl;
+  }
+  h2 {
+    @apply text-2xl;
+  }
+  h3 {
+    @apply text-lg;
+  }
+
+  /* One focus treatment for every interactive element. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-ring/50 ring-offset-2 ring-offset-background;
+  }
+
+  ::selection {
+    @apply bg-secondary text-secondary-foreground;
+  }
 }
 
-* { box-sizing: border-box; }
-body {
-  margin: 0;
-  min-height: 100vh;
-  background: radial-gradient(ellipse at top left, #1a2740, var(--bg));
-  color: var(--ink);
+@layer utilities {
+  /* WaveSurfer injects its own container; keep it from forcing page scroll. */
+  .wave-host > div {
+    max-width: 100%;
+  }
 }
-#root {
-  max-width: 720px;
-  margin: 0 auto;
-  padding: 2rem 1.25rem 3rem;
-}
-h1 {
-  font-family: "IBM Plex Serif", Georgia, serif;
-  font-weight: 600;
-  font-size: 1.75rem;
-  margin: 0 0 0.35rem;
-}
-.sub { color: var(--muted); margin-bottom: 1.5rem; }
-.row { display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center; margin-bottom: 1rem; }
-button {
-  border: 1px solid var(--line);
-  background: var(--panel);
-  color: var(--ink);
-  padding: 0.65rem 1rem;
-  border-radius: 8px;
-  cursor: pointer;
-  font: inherit;
-}
-button.primary { background: var(--accent); border-color: transparent; color: #fff; }
-button:disabled { opacity: 0.45; cursor: not-allowed; }
-.meter {
-  width: 160px;
-  height: 10px;
-  background: #0e131c;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  overflow: hidden;
-}
-.meter > span {
-  display: block;
-  height: 100%;
-  background: var(--ok);
-  width: 0%;
-  transition: width 80ms linear;
-}
-.caption {
-  min-height: 4.5rem;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 1rem;
-  line-height: 1.5;
-  margin-bottom: 1rem;
-}
-.caption .label { color: var(--muted); font-size: 0.8rem; display: block; margin-bottom: 0.35rem; }
-.status { color: var(--muted); font-size: 0.9rem; }
-.status.ok { color: var(--ok); }
-.log {
-  margin-top: 1rem;
-  max-height: 220px;
-  overflow: auto;
-  font-family: "IBM Plex Mono", Consolas, monospace;
-  font-size: 0.75rem;
-  color: var(--muted);
-  border-top: 1px solid var(--line);
-  padding-top: 0.75rem;
-}
-.card {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 1rem;
-  margin-bottom: 1rem;
-}
-.bar {
-  display: grid;
-  grid-template-columns: 7.5rem 1fr 2.5rem;
-  gap: 0.5rem;
-  align-items: center;
-  margin: 0.35rem 0;
-  font-size: 0.85rem;
-}
-.bar > span:nth-child(2) {
-  display: block;
-  height: 8px;
-  background: #0e131c;
-  border-radius: 999px;
-  overflow: hidden;
-}
-.bar i {
-  display: block;
-  height: 100%;
-  background: var(--accent);
-  border-radius: 999px;
-}
-.evidence { color: var(--muted); font-size: 0.9rem; }
-.label { color: var(--muted); font-size: 0.8rem; display: block; margin-bottom: 0.35rem; }
