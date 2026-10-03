@@ -11,6 +11,11 @@ Read `CLAUDE.md` first. Everything before this must be passing. **Panel mode beh
 3. Text lane — same bus, same agent+guard, same evaluation; delivery "not assessed".
 4. Optional video — display only; never model/score input (contract 9).
 5. Hardening — WS reconnect, session cap, intake rate-limit, delete-my-data.
+6. **Proposal only — live coding pack.** Needs explicit approval before any of it is built.
+   The candidate solves a short problem in an in-browser code editor. If the solution is
+   correct, the interviewer agent adds a twist; if not, it probes the specific mistake.
+   Code is never executed on our server. Any correctness check is the model reading the
+   code.
 
 ## Exit criterion
 

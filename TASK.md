@@ -33,6 +33,7 @@ Brief: `docs/stages/stage-05-planner-spine.md`
 - [x] Pack schema + `behavioral-core` and `systems-design` YAML
 - [x] In-memory tools (`get_claims`, `get_claim`, `get_coverage`, `get_time_remaining`, `get_candidate_signals`, `note_claim_status`, `ask_spine`, `end_session`)
 - [x] Pure guard (spine order/verbatim, time budget, probe depth, claims scope)
+- [x] No repeated spine or probe in a session, including a near-duplicate (`question_repeat`)
 - [x] Minimal asyncio agent loop with step limit; `question_planned` / `coverage_update` after acceptance
 - [x] Tests: guard table, logged overrides, identical spine text, replay without live tools
 - [x] Recorded sessions `fixtures/sessions/stage5_sess_{a,b,live}` + `docs/decisions/stage5_guard.md`

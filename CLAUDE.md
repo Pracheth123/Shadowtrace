@@ -90,8 +90,10 @@ with a measured reason.
 **If you find an older design doc** mentioning a blackboard, versioned snapshots, a rolling scorer,
 three live personas, a floor controller with urge scores, fairness decay, server-side audio mixing,
 an employer review queue, a consensus packet, an audit log, or a deterministic planner that *chooses*
-questions: those are removed or superseded. Do not build them. Panel mode (multi-voice) exists but
-is the last stage and lives behind a flag.
+questions: those are removed or superseded. Do not build them. Also do not build facial
+emotion detection, gaze or iris tracking, resume scores with eligibility cutoffs, or scoring
+an answer by similarity to a model answer. Those violate contracts 8 and 9. Panel mode
+(multi-voice) exists but is the last stage and lives behind a flag.
 
 ## Contracts that must not be broken
 

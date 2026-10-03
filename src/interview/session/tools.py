@@ -89,6 +89,7 @@ class SessionTools:
         }
         self.notes: dict[str, dict[str, str]] = {}
         self.probed: set[str] = set()
+        self.asked: list[str] = []
         self.ended = False
 
     def add_transcript(self, text: str) -> None:
@@ -114,6 +115,7 @@ class SessionTools:
             claim_ids=frozenset(c.id for c in self.claims),
             claim_competency=competency,
             transcript_texts=tuple(self.transcript_texts),
+            asked_questions=tuple(self.asked),
         )
 
     def untested_claim(self) -> Claim | None:
@@ -137,6 +139,8 @@ class SessionTools:
                 self.probed.add(decision.claim_id)
         elif decision.kind == "end":
             self.ended = True
+        if decision.text and decision.text not in self.asked:
+            self.asked.append(decision.text)
 
     def coverage_payload(self) -> dict[str, Any]:
         return {

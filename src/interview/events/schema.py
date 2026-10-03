@@ -184,6 +184,7 @@ class GuardOverride(EventBase):
         "time_budget",
         "probe_depth",
         "claims_scope",
+        "question_repeat",
         "step_limit",
     ]
     agent_intent: str

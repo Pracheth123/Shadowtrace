@@ -9,11 +9,18 @@ pack verbatim. A probe is one question phrased from the guard-approved target.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal
 
 from interview.events.schema import AgentStep, CoverageUpdate, GuardOverride, QuestionPlanned
-from interview.session.guard import Decision, Intent, depth_cap, evaluate, probes_fit
+from interview.session.guard import (
+    Decision,
+    Intent,
+    depth_cap,
+    evaluate,
+    is_near_duplicate,
+    probes_fit,
+)
 from interview.session.tools import SessionTools
 
 if TYPE_CHECKING:
@@ -172,6 +179,30 @@ class LiveAgent:
             return Outcome(kind="end", text="", decision=decision)
 
         text = await self._speak_text(intent, decision, act)
+        if decision.kind == "probe" and is_near_duplicate(
+            text, self._tools.guard_state().asked_questions
+        ):
+            decision = evaluate(
+                Intent(
+                    action="probe",
+                    claim_id=intent.claim_id,
+                    transcript_anchor=intent.transcript_anchor,
+                    target_depth=intent.target_depth,
+                    proposed_text=text,
+                ),
+                self._tools.guard_state(),
+            )
+            await self._emit_override(turn_id, step, decision)
+            step += 1
+            if decision.kind == "end":
+                if commit:
+                    await act("end_session", {}, force=True)
+                    await self.commit_outcome(turn_id, decision)
+                await speak("end session")
+                return Outcome(kind="end", text="", decision=decision)
+            text = await self._speak_text(intent, decision, act)
+        if text:
+            decision = replace(decision, text=text)
         if commit:
             await self.commit_outcome(turn_id, decision)
         await speak(f"{decision.kind} accepted")

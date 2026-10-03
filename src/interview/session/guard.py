@@ -8,10 +8,17 @@ end). The caller logs `guard_override` and speaks only the enforced result.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from typing import Literal
 
 from interview.packs.model import Pack
+
+_WORDS = re.compile(r"[a-z0-9']+")
+# Same wording aside from case, whitespace, and small edits. Distinct spine
+# lines and templated probes that swap one anchor stay under this.
+_NEAR_DUPLICATE = 0.92
 
 # Stage 10 owns the full intensity config. Depth caps are the part the guard
 # must enforce now so a probe cannot outrun the chosen hardness.
@@ -53,6 +60,7 @@ class GuardState:
     claim_ids: frozenset[str]
     claim_competency: dict[str, str]
     transcript_texts: tuple[str, ...]
+    asked_questions: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -91,10 +99,39 @@ def _in_scope(intent: Intent, state: GuardState) -> bool:
     return anchor.casefold() in blob
 
 
+def _normalize_question(text: str) -> str:
+    return " ".join(_WORDS.findall(text.casefold()))
+
+
+def is_near_duplicate(candidate: str, asked: tuple[str, ...]) -> bool:
+    """True when this question repeats one already asked in the session."""
+    left = _normalize_question(candidate)
+    if not left:
+        return False
+    for previous in asked:
+        right = _normalize_question(previous)
+        if not right:
+            continue
+        if left == right:
+            return True
+        if SequenceMatcher(None, left, right).ratio() >= _NEAR_DUPLICATE:
+            return True
+    return False
+
+
 def _next_spine(state: GuardState):
     if not state.outstanding:
         return None
     return state.pack.spine_item(state.outstanding[0])
+
+
+def _next_unasked_spine(state: GuardState):
+    for spine_id in state.outstanding:
+        item = state.pack.spine_item(spine_id)
+        if is_near_duplicate(item.text, state.asked_questions):
+            continue
+        return item
+    return None
 
 
 def _spine_decision(
@@ -171,7 +208,7 @@ def _probe_decision(
 
 
 def _force_spine(state: GuardState, intent: Intent, rule: str) -> Decision:
-    nxt = _next_spine(state)
+    nxt = _next_unasked_spine(state)
     if nxt is None:
         return _end_decision(intent, accepted=False, rule=rule)
     return _spine_decision(
@@ -188,8 +225,8 @@ def evaluate(intent: Intent, state: GuardState) -> Decision:
     """
     Apply hard rules. First violation wins.
 
-    Order: spine completeness/order, verbatim text, time budget (drops probes),
-    probe depth, claims scope.
+    Order: spine completeness/order, verbatim text, repeated question, time
+    budget (drops probes), probe depth, claims scope.
     """
     nxt = _next_spine(state)
 
@@ -216,6 +253,8 @@ def evaluate(intent: Intent, state: GuardState) -> Decision:
                 agent_intent=f"ask_spine:{nxt.id}:proposed",
                 enforced_action=f"ask_spine:{nxt.id}:verbatim",
             )
+        if is_near_duplicate(nxt.text, state.asked_questions):
+            return _force_spine(state, intent, "question_repeat")
         return _spine_decision(
             state,
             nxt.id,
@@ -248,6 +287,9 @@ def evaluate(intent: Intent, state: GuardState) -> Decision:
 
     if not _in_scope(intent, state):
         return _force_spine(state, intent, "claims_scope")
+
+    if intent.proposed_text and is_near_duplicate(intent.proposed_text, state.asked_questions):
+        return _force_spine(state, intent, "question_repeat")
 
     return _probe_decision(
         intent,

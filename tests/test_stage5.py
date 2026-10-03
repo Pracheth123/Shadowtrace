@@ -411,3 +411,85 @@ async def test_step_limit_override(tmp_path: Path) -> None:
     planned = [e for e in events if e.type == "question_planned"]
     assert planned and planned[0].kind == "spine"
     assert _spine_texts(log_path)[0] == _pack().spine[0].text
+
+
+def test_repeated_spine_and_near_duplicate_are_rejected() -> None:
+    pack = _pack()
+    first = pack.spine[0].text
+    near = "Tell me about a time you owned a project from the start to the finish."
+    state = _state(asked_questions=(first,))
+    exact = evaluate(Intent(action="ask_spine", spine_id="own-project"), state)
+    assert exact.rule == "question_repeat"
+    assert exact.accepted is False
+    assert exact.spine_id == "disagree-teammate"
+    assert exact.text == pack.spine_item("disagree-teammate").text
+
+    near_state = _state(asked_questions=(near,))
+    nudged = evaluate(Intent(action="ask_spine", spine_id="own-project"), near_state)
+    assert nudged.rule == "question_repeat"
+    assert nudged.spine_id == "disagree-teammate"
+
+    other = pack.spine_item("disagree-teammate").text
+    distinct = evaluate(
+        Intent(action="ask_spine", spine_id="own-project"),
+        _state(asked_questions=(other,)),
+    )
+    assert distinct.accepted is True
+    assert distinct.rule is None
+
+
+def test_repeated_probe_is_rejected() -> None:
+    pack = _pack()
+    asked = pack.spine[0].text
+    state = _after_first_spine()
+    state = GuardState(
+        pack=state.pack,
+        intensity=state.intensity,
+        covered=state.covered,
+        outstanding=state.outstanding,
+        depth_on_current=state.depth_on_current,
+        time_remaining_s=state.time_remaining_s,
+        claim_ids=state.claim_ids,
+        claim_competency=state.claim_competency,
+        transcript_texts=state.transcript_texts,
+        asked_questions=(asked,),
+    )
+    decision = evaluate(
+        Intent(
+            action="probe",
+            claim_id="c-kafka",
+            target_depth=1,
+            proposed_text="Tell me about a time you owned a project from start to finish.",
+        ),
+        state,
+    )
+    assert decision.rule == "question_repeat"
+    assert decision.kind == "spine"
+    assert decision.spine_id == "disagree-teammate"
+
+
+@pytest.mark.asyncio
+async def test_repeated_question_is_logged(tmp_path: Path) -> None:
+    repeated = _pack().spine[0].text
+    log_path = await _run_session(
+        tmp_path,
+        "sess-repeat",
+        [
+            "I owned the payments pipeline from design through launch.",
+            "We measured the lag and I decided to shed load.",
+        ],
+        scripted={
+            1: Intent(
+                action="probe",
+                claim_id="c-kafka",
+                target_depth=1,
+                proposed_text=repeated,
+            )
+        },
+    )
+    events = list(read_events(log_path))
+    repeats = [e for e in events if e.type == "guard_override" and e.rule == "question_repeat"]
+    assert len(repeats) == 1
+    assert repeats[0].enforced_action == "ask_spine:disagree-teammate"
+    spoken = _spine_texts(log_path)
+    assert spoken.count(repeated) == 1

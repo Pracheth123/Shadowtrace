@@ -15,6 +15,11 @@ the live path calls it (contract 6). Live agent has no evaluation tool.
 4. Claim adjudication with negation check.
 5. Merge + scorer (findings only; no keyword/claim-match/fit fields — contract 8).
 6. Report JSON + HTML. `fake_eval` mock. CLI `tools/evaluate.py`.
+7. **Optional: download the transcript as PDF.** A control on the report downloads the
+   transcript PDF. Proposed library, not added now: **WeasyPrint**. The report is already
+   HTML, so the PDF is a render of that document rather than a second layout that can
+   drift. WeasyPrint needs Pango and Cairo on the machine; add it only when this stage
+   is built.
 
 ## Exit criterion
 
