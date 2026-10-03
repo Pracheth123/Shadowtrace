@@ -34,7 +34,7 @@ from interview.mocks.fake_stt import FakeStt
 from interview.session.runtime import LiveSession, SessionConfig
 from interview.session.speak import FakeSpeakPort
 
-app = FastAPI(title="Shadowtrace — Stage 4")
+app = FastAPI(title="Shadowtrace — Stage 5")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -59,7 +59,7 @@ def _use_mock_llm() -> bool:
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "stage": 4}
+    return {"status": "ok", "stage": 5}
 
 
 @app.websocket("/ws/session")
@@ -94,7 +94,7 @@ async def ws_session(websocket: WebSocket):
 
     bus.subscribe("tts_chunk", on_tts)
 
-    cfg = SessionConfig(use_mock_llm=_use_mock_llm())
+    cfg = SessionConfig(use_mock_llm=_use_mock_llm(), pack_id="behavioral-core")
     live = LiveSession(
         bus=bus,
         session_id=session_id,

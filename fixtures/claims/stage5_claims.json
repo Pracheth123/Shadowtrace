@@ -1,0 +1,15 @@
+{
+  "note": "Fixture until stage 6 writes claims.json. Tool results treat this as data.",
+  "claims": [
+    {
+      "id": "c-kafka",
+      "text": "Built a Kafka pipeline handling about two million events per second",
+      "competency": "systems"
+    },
+    {
+      "id": "c-rollback",
+      "text": "Led a rollback of a production deploy during an incident",
+      "competency": "ownership"
+    }
+  ]
+}

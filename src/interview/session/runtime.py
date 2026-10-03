@@ -1,10 +1,13 @@
 """
-Live session runtime — Stage 4.
+Live session runtime — Stage 4 speak path, Stage 5 guard loop.
 
 Owns conversation history, opener/closer, transcript writer, and the interviewer
 speak path. Speaks only through a SpeakPort callback so this module never imports
 transport (contract 1). Transport and TTS are wired in server.py via the bus /
 injected ports.
+
+`pack_id=stage4-freeform` keeps the stage-4 freeform interviewer. Any other pack
+id loads the stage-5 agent: tools, guard, verbatim spine.
 """
 
 from __future__ import annotations
@@ -24,7 +27,11 @@ from interview.events.schema import (
     SessionComplete,
     Truncate,
 )
+from interview.packs.model import PackLoadError, load_pack
+from interview.session.agent import LiveAgent
+from interview.session.guard import Intent
 from interview.session.interviewer import LeadInterviewer
+from interview.session.tools import SessionTools, load_claims_fixture
 from interview.session.transcript import TranscriptWriter
 
 if TYPE_CHECKING:
@@ -58,6 +65,12 @@ class SessionConfig:
     pack_id: str = "stage4-freeform"
     intensity: str = "realistic"
     use_mock_llm: bool = True  # tests / replay: True. Live: False → Groq
+    # Turn index → intent the agent proposes instead of the default policy.
+    # The guard still rules. Used to record overrides; production leaves this empty.
+    scripted_intents: dict[int, Intent] | None = None
+    max_tool_calls: int | None = None
+    # Stage 6 claims.json. Unset keeps the stage-5 fixture.
+    claims_path: str | None = None
 
 
 @dataclass
@@ -78,6 +91,9 @@ class LiveSession:
         self._intensity_history: list[dict] = []
         self._gen_task: asyncio.Task | None = None
         self._closed = False
+        self._end_after_turn = False
+        self._agent: LiveAgent | None = None
+        self._tools: SessionTools | None = None
         self._model_client = None
         if not self.config.use_mock_llm:
             from interview.llm.client import GroqModelClient
@@ -90,9 +106,38 @@ class LiveSession:
         self.bus.subscribe("final_transcript", self._on_final)
         self.bus.subscribe("truncate", self._on_truncate)
         self.bus.subscribe("barge_in", self._on_barge_in)
+        self.bus.subscribe("signals", self._on_signals)
+
+    def _bind_pack(self) -> None:
+        """Load a stage-5 pack. stage4-freeform keeps the freeform interviewer."""
+        self._agent = None
+        self._tools = None
+        if self.config.pack_id in ("", "stage4-freeform"):
+            return
+        try:
+            pack = load_pack(self.config.pack_id)
+        except PackLoadError as exc:
+            log.warning("Pack %s unavailable (%s); using freeform interviewer", self.config.pack_id, exc)
+            return
+        claims_file = (
+            Path(self.config.claims_path) if self.config.claims_path else None
+        )
+        tools = SessionTools(
+            pack,
+            load_claims_fixture(claims_file),
+            intensity=self.config.intensity,
+        )
+        kwargs: dict = {
+            "scripted_intents": self.config.scripted_intents,
+        }
+        if self.config.max_tool_calls is not None:
+            kwargs["max_tool_calls"] = self.config.max_tool_calls
+        self._tools = tools
+        self._agent = LiveAgent(self.bus, self.session_id, tools, **kwargs)
 
     async def start(self) -> None:
         self._started_at = time.monotonic()
+        self._bind_pack()
         await self._speak_fixed(OPENER, turn_id="turn-opener")
 
     async def end(self, reason: str = "client") -> None:
@@ -137,6 +182,8 @@ class LiveSession:
             t_start=float(event.t_emit or 0.0),
             t_end=float(event.t_audio_in),
         )
+        if self._tools is not None:
+            self._tools.add_transcript(event.text)
         if self.on_wire:
             await self.on_wire({"type": "turn_end", "turn_id": event.turn_id})
 
@@ -161,10 +208,25 @@ class LiveSession:
             await self._gen_task
         except asyncio.CancelledError:
             pass
+        if self._end_after_turn and not self._closed:
+            await self.end(reason="agent")
 
     async def _generate_reply(self, turn_id: str) -> None:
         utterance_id = str(uuid.uuid4())
         try:
+            if self._agent is not None:
+                outcome = await self._agent.run(
+                    turn_id=turn_id,
+                    turn_index=self.turn_count - 1,
+                )
+                if self._closed:
+                    return
+                if outcome.kind == "end":
+                    self._end_after_turn = True
+                    return
+                await self._speak_question(outcome.text, turn_id, utterance_id)
+                return
+
             iv = LeadInterviewer(
                 self.bus,
                 self.session_id,
@@ -215,6 +277,38 @@ class LiveSession:
             await self.on_wire(
                 {"type": "agent_utterance_end", "utterance_id": utterance_id}
             )
+
+    async def _speak_question(self, text: str, turn_id: str, utterance_id: str) -> None:
+        self.history.append({"role": "assistant", "content": text})
+        first = text.strip()
+        if "." in first:
+            first_sentence = first.split(".")[0].strip() + "."
+        else:
+            first_sentence = first
+        await self.bus.emit(
+            DraftReady(
+                session_id=self.session_id,
+                turn_id=turn_id,
+                producer="session_runtime",
+                first_sentence=first_sentence,
+                variant="plain",
+                utterance_id=utterance_id,
+            )
+        )
+        await self._deliver(text, turn_id, utterance_id)
+
+    async def _on_signals(self, event) -> None:
+        if self._tools is None:
+            return
+        distress = event.distress.model_dump() if event.distress else None
+        self._tools.note_signals(
+            {
+                "claim_hits": list(event.claim_hits),
+                "pause_stats": event.pause_stats.model_dump(),
+                "silence_ms": event.silence_ms,
+                "distress": distress,
+            }
+        )
 
     async def _speak_fixed(self, text: str, *, turn_id: str) -> None:
         utterance_id = str(uuid.uuid4())

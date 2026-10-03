@@ -1,4 +1,4 @@
-"""Session package — live runtime, interviewer, transcript (stages 3–4)."""
+"""Session package — live runtime, interviewer, guard, tools (stages 3–5)."""
 
 from interview.session.runtime import LiveSession, SessionConfig
 

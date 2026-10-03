@@ -9,5 +9,5 @@ Active work is tracked in [`TASK.md`](TASK.md). Stage briefs are in
 
 ## Current focus
 
-Stage 4 exit criterion met offline (three recorded sessions + waterfalls).  
-Next: Stage 5 — guard + spine/probe (`docs/stages/stage-05-planner-spine.md`).
+Stage 6 exit criterion met (public repo intake + claims, fit/gap, exploration trace).  
+Next: Stage 7 — signal bus, turn controller, speculative loop (`docs/stages/stage-07-signal-bus-turn-controller.md`).

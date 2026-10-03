@@ -1,0 +1,9 @@
+{
+  "url": "https://github.com/pypa/sampleproject",
+  "path": "fixtures/intake/stage6_public/repo",
+  "commit": "621e497",
+  "files_listed": 8,
+  "bytes_read": 1804,
+  "truncated": false,
+  "fallback": "cloned"
+}
