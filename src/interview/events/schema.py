@@ -1,5 +1,5 @@
 """
-Event schemas for the AI mock interview platform — Stage 1.
+Event schemas for the AI mock interview platform — Stage 1 (+ agentic v2).
 
 Every event carries: session_id, turn_id, seq, t_emit, producer, schema_version.
 Audio-in events  carry: t_audio_in  (position in candidate audio stream, seconds).
@@ -9,7 +9,11 @@ turn_id is None only on session-scoped events (currently: session_complete).
 seq and t_emit are assigned by the bus if the producer leaves them unset;
 replay passes them through untouched so the replayed log matches the fixture exactly.
 t_emit is seconds since session start (not a raw monotonic value).
-schema_version starts at 1; increment on every breaking change.
+
+schema_version:
+  1 — original vocabulary (fixtures/sessions/fake_session.jsonl)
+  2 — additive agent events: agent_step, tool_call, tool_result, guard_override
+New producers default to 2. v1 logs must still parse and replay byte-identically.
 """
 
 from __future__ import annotations
@@ -63,7 +67,7 @@ class DistressSignal(BaseModel):
 
 class EventBase(BaseModel):
     """Fields present on every event."""
-    schema_version: int = 1
+    schema_version: int = 2
     session_id: str
     # turn_id is None only for session-scoped events (currently: session_complete).
     turn_id: str | None
@@ -112,7 +116,7 @@ class FinalTranscript(EventBase):
 class Signals(EventBase):
     """
     Behavioural signals extracted from the candidate's turn.
-    Feeds the question planner only — never reaches the scorer.
+    Feeds the live agent / guard only — never reaches the scorer (contract 8).
     """
     type: Literal["signals"] = "signals"
     claim_hits: list[str]       # claim IDs/labels from the Claims File (stage 6)
@@ -123,13 +127,67 @@ class Signals(EventBase):
 
 class LikelyNext(EventBase):
     """
-    Speculative prediction of what the planner will choose next.
-    signal_snapshot is dict[str, Any] for now; stage 7 replaces it with a
-    typed SignalModel once the signal bus shape is fixed.
+    Speculative trigger: candidate speech looks complete enough to start the
+    agent loop early. signal_snapshot is dict[str, Any] for now; stage 7
+    replaces it with a typed SignalModel once the signal bus shape is fixed.
     """
     type: Literal["likely_next"] = "likely_next"
     signal_snapshot: dict[str, Any]
     persona: str | None = None  # None outside panel mode (stage 11)
+
+
+class AgentStep(EventBase):
+    """
+    One reasoning/act step of an agent (live interviewer, indexer, evaluator, …).
+    Replay re-emits these without calling a model (contract 5).
+    """
+    type: Literal["agent_step"] = "agent_step"
+    step_index: int
+    band: Literal["live", "intake", "eval", "roadmap"]
+    phase: Literal["observe", "think", "act", "speak", "cancelled"]
+    summary: str
+    # Reason: barge-in / hard step-limit cancel must be visible in the log.
+    cancelled: bool = False
+
+
+class ToolCall(EventBase):
+    """Agent invoked a local tool. args are data only (contract 7)."""
+    type: Literal["tool_call"] = "tool_call"
+    step_index: int
+    tool: str
+    args: dict[str, Any]
+
+
+class ToolResult(EventBase):
+    """
+    Result of a tool call. On replay, this recorded payload is re-emitted
+    so downstream layers run without the tool implementation live.
+    """
+    type: Literal["tool_result"] = "tool_result"
+    step_index: int
+    tool: str
+    ok: bool
+    result: dict[str, Any]
+    latency_ms: float
+
+
+class GuardOverride(EventBase):
+    """
+    The deterministic guard rejected or rewrote an agent intent.
+    Every override must be logged (no silent coercion).
+    """
+    type: Literal["guard_override"] = "guard_override"
+    step_index: int
+    rule: Literal[
+        "spine_order",
+        "spine_verbatim",
+        "time_budget",
+        "probe_depth",
+        "claims_scope",
+        "step_limit",
+    ]
+    agent_intent: str
+    enforced_action: str
 
 
 class DraftReady(EventBase):
@@ -193,7 +251,11 @@ class Truncate(EventBase):
 
 
 class QuestionPlanned(EventBase):
-    """Question planner has selected the next question."""
+    """
+    Guard-approved next question (spine or probe).
+    Emitted after the agent proposes a move and the guard accepts (or overrides).
+    Kept for waterfall compatibility; the agent decides, the guard enforces.
+    """
     type: Literal["question_planned"] = "question_planned"
     kind: Literal["spine", "probe"]
     competency: str
@@ -240,6 +302,10 @@ Event = Annotated[
         FinalTranscript,
         Signals,
         LikelyNext,
+        AgentStep,
+        ToolCall,
+        ToolResult,
+        GuardOverride,
         DraftReady,
         FloorGranted,
         RouteDecision,

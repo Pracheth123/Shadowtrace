@@ -343,3 +343,45 @@ def test_waterfall_percentiles() -> None:
     totals = [80.0, 70.0, 70.0, 80.0, 70.0, 80.0]
     assert _pct(totals, 50) == 70.0, f"p50 wrong: {_pct(totals, 50)}"
     assert _pct(totals, 95) == 80.0, f"p95 wrong: {_pct(totals, 95)}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Test 5: schema v2 agent events + fixture replay
+# ─────────────────────────────────────────────────────────────────────────────
+
+FIXTURE_V2 = Path(__file__).parent.parent / "fixtures" / "sessions" / "fake_session_v2.jsonl"
+
+
+def test_v1_fixture_still_parses() -> None:
+    """schema_version bump is additive; v1 fixture must still load."""
+    events = list(read_events(FIXTURE))
+    assert len(events) >= 70
+    assert all(e.schema_version == 1 for e in events)
+
+
+def test_v2_fixture_has_agent_turn() -> None:
+    """v2 fixture includes agent steps, tools, a guard override, and a cancelled step."""
+    events = list(read_events(FIXTURE_V2))
+    types = [e.type for e in events]
+    assert "agent_step" in types
+    assert "tool_call" in types
+    assert "tool_result" in types
+    assert "guard_override" in types
+    cancelled = [e for e in events if e.type == "agent_step" and e.cancelled]
+    assert cancelled, "expected a barge-in-cancelled agent_step"
+    assert any(e.type == "barge_in" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_v2_replay_identical_to_fixture() -> None:
+    from tools.replay import replay  # type: ignore[import]
+
+    fixture_events = list(read_events(FIXTURE_V2))
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "replayed_v2.jsonl"
+        await replay(FIXTURE_V2, fast=True, out=out)
+        replayed = list(read_events(out))
+
+    assert len(replayed) == len(fixture_events)
+    for i, (orig, rep) in enumerate(zip(fixture_events, replayed)):
+        assert orig.model_dump() == rep.model_dump(), f"v2 event {i} ({orig.type}) differs"
