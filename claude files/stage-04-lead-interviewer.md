@@ -28,7 +28,8 @@ this stage sets the baseline that stage 7 has to beat. The interviewer is the li
 
 Audio: PCM s16le, 16 kHz, mono, 20 ms frames (640 bytes) as binary WebSocket frames both ways.
 
-Client → Server JSON: `session_start`, `playback_ack`, `barge_in`, `session_end`.
+Client → Server JSON: `session_start`, `playback_ack`, `barge_in`, `session_end`,
+`candidate_final` (mock / browser-STT lane until transport STT is composed in).
 Server → Client JSON: `session_ready`, `agent_utterance_start`, `agent_utterance_end`, `caption`,
 `turn_end`, `session_complete`, `error`.
 

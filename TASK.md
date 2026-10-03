@@ -1,35 +1,26 @@
 # Tasks
 
-## 2026-10-03 — Stage 4: Wire the lead interviewer
+## 2026-10-03 — Stage 4: Wire the live interviewer
 
-Brief: `claude files/stage-04-lead-interviewer.md`
+Brief: `docs/stages/stage-04-lead-interviewer.md`
 
-- [ ] Approve WebSocket wire format + audio framing (blocked — waiting)
-- [ ] `src/interview/server.py` — FastAPI session WS, bus + logger + transport + interviewer
-- [ ] Session lifecycle: start / turns / end (`session_complete`)
-- [ ] Transcript writer with truncate honouring
-- [ ] Fixed opener + closer (N turns or T minutes)
-- [ ] React + TS + Vite client (start, mic meter, live caption, end)
-- [ ] Barge-in end-to-end (cancel generation, stop audio, truncate transcript)
-- [ ] Tests: fake session, import-boundary, waterfall replay
-- [ ] Exit: 3 real sessions of 5+ turns with waterfalls in `fixtures/sessions/`
+- [x] Agentic design docs + schema v2 (prerequisite override)
+- [x] Approve wire format (owner: proceed without further gates)
+- [x] `src/interview/server.py` — FastAPI session WS composition root
+- [x] `LiveSession` lifecycle + transcript writer + opener/closer
+- [x] React + TS + Vite client (start, mic meter, caption, end, barge-in)
+- [x] Tests: fake session, import-boundary, truncate
+- [ ] Three real recorded sessions + waterfalls in `fixtures/sessions/`
+- [ ] Compose transport STT into server (currently `candidate_final` / Web Speech lane)
 
 ## 2026-10-03 — Stage 3: Inference + TTS
 
 Brief: `claude files/stage-03-inference-tts.md`
 
-- [x] `LeadInterviewer` streams text, emits `draft_ready` on first sentence
-- [x] `TtsAdapter` + `FakeTts` emit `tts_chunk` with word timestamps
-- [x] `FakeLlm` with configurable TTFT delay + token rate
-- [x] `tools/bench_ttft.py` + `tools/bench_tts.py` (mock path measured)
-- [x] 20 bench transcripts in `fixtures/transcripts/bench_*.json`
-- [x] Stage 3 tests (`tests/test_stage3.py`) — truncation log lines verified
-- [x] Client playback-ack page: `client/stage3_playback.html`
-- [x] Decision doc: `docs/decisions/inference.md` + `config/inference.yaml`
-- [ ] Live TTFT/TTS benches with API keys (replace provisional vendor choice)
-- [ ] Commit Stage 3 once live benches land or user accepts mock-only exit
+- [x] Offline inference/TTS path + benches (mock)
+- [ ] Live TTFT/TTS benches with API keys
 
 ## Done earlier
 
-- [x] Stage 1 — event bus / JSONL log / waterfall
+- [x] Stage 1 — event bus / JSONL log / waterfall (+ schema v2 agent events)
 - [x] Stage 2 — transport, VAD, turn detection, fake STT, barge-in truncation

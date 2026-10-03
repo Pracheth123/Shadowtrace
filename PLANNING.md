@@ -9,5 +9,7 @@ Active work is tracked in [`TASK.md`](TASK.md). Stage briefs are in
 
 ## Current focus
 
-Stage 4 — Wire the lead interviewer
-(`claude files/stage-04-lead-interviewer.md`). Waiting on wire-format approval.
+Stage 4 — Wire the live interviewer
+(`docs/stages/stage-04-lead-interviewer.md` / `claude files/stage-04-lead-interviewer.md`).
+
+Agentic architecture (tool-using live agent + guard) is documented; tools/guard land in stage 5.
