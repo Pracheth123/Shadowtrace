@@ -728,11 +728,11 @@ def test_repository_urls_are_validated() -> None:
 
 
 def test_uploads_are_accepted_by_type_with_useful_recovery() -> None:
-    for name in ("ada.pdf", "ada.txt", "ada.md", "ADA.PDF"):
+    for name in ("ada.pdf", "ada.txt", "ada.md", "ADA.PDF", "ada.docx"):
         assert check_resume_upload(name).startswith(".")
     with pytest.raises(UnsupportedUpload) as caught:
-        check_resume_upload("ada.docx")
-    assert "export it as pdf" in caught.value.recovery.casefold()
+        check_resume_upload("ada.doc")
+    assert "docx or pdf" in caught.value.recovery.casefold()
     with pytest.raises(UnsupportedUpload) as caught:
         check_resume_upload("scan.png")
     assert "ocr" in str(caught.value).casefold()

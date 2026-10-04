@@ -37,6 +37,11 @@ class Claim(BaseModel):
     text: str
     competency: str
     status: str = Field(default="untested")
+    # Stage 15: what the claim rests on (candidate_assertion, repository,
+    # work_sample). Lets a role say whether it is probing an assertion or
+    # corroborated material; never a reason to treat a claim as false.
+    evidence_kind: str = "candidate_assertion"
+    source_ref: str = ""
 
 
 def load_claims_fixture(path: Path | None = None) -> list[Claim]:
@@ -71,8 +76,12 @@ class SessionTools:
         *,
         intensity: str = "realistic",
         clock: Callable[[], float] | None = None,
+        time_budget_s: float | None = None,
     ) -> None:
         self.pack = pack
+        # A round in a multi-round interview gets the coordinator's slice, not
+        # the pack's standalone budget.
+        self.time_budget_s = float(time_budget_s or pack.time_budget_s)
         self.intensity = intensity
         self.claims = list(claims or [])
         self._clock = clock or time.monotonic
@@ -101,7 +110,7 @@ class SessionTools:
 
     def time_remaining_s(self) -> float:
         elapsed = max(0.0, self._clock() - self._t0)
-        return max(0.0, self.pack.time_budget_s - elapsed)
+        return max(0.0, self.time_budget_s - elapsed)
 
     def guard_state(self) -> GuardState:
         competency = {c.id: c.competency for c in self.claims}
@@ -202,7 +211,7 @@ class SessionTools:
         if name == "get_time_remaining":
             return {
                 "time_remaining_s": round(self.time_remaining_s(), 3),
-                "time_budget_s": self.pack.time_budget_s,
+                "time_budget_s": self.time_budget_s,
             }
         if name == "get_candidate_signals":
             return dict(self.signals)

@@ -1,5 +1,24 @@
 # Tasks
 
+## 2026-10-04 — Stage 15: the candidate journey, connected — DONE (browser voice unverified)
+
+Verified: full suite green (see below); `tests/test_stage15_journey.py` drives
+guest → intake → rounds interview → evaluation → report → history → plan →
+delete through the real API; live Groq journey and live Deepgram voice smoke
+both pass. Evidence: `docs/decisions/stage15_journey.md`. Architecture:
+`docs/ARCHITECTURE.md`.
+
+- [x] Real intake API (multipart, background, progress, recoverable failures); DOCX supported.
+- [x] Guest identity, per-candidate storage, 404 isolation, full deletion.
+- [x] Candidate claims with evidence kinds reach the live session; no fixture claims.
+- [x] Coordinator wired: Full = HR → HM → Specialist with spoken handoffs; single rounds.
+- [x] Server-reported progress; explicit voice→text fallback; provider warnings.
+- [x] Background evaluation job with states, idempotency, retry; role-aware, quote-verified evaluation.
+- [x] Not-assessed instead of 0.5; aggregates over assessed dimensions; delivery measured, never scored.
+- [x] Results/history/plan from real data; transcript and scorecard downloads.
+- [ ] In-browser voice (mic, playback, acks) not exercised in this run.
+- [ ] Legacy stage-8 pipeline still present for fixture replay (not used by the app).
+
 ## 2026-10-04 — Stage 13: three distinct interviewer roles — PARTIAL
 
 Verified: 224 passed, 1 skipped. New: `tests/test_stage13_roles.py` (47 tests).

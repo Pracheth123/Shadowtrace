@@ -11,7 +11,9 @@ tool_result payloads and never clones.
 
 from __future__ import annotations
 
+import fnmatch
 import json
+import os
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,6 +27,43 @@ MAX_LIST = 200
 MAX_GREP_HITS = 20
 MAX_CLONE_BYTES = 20_000_000
 CLONE_TIMEOUT_S = 25
+
+
+# Never listed, read or grepped: credentials and key material. A candidate's
+# public repo can still contain a committed secret, and nothing here should
+# copy it into an intake artifact.
+SECRET_PATTERNS = (
+    ".env", ".env.*", "*.pem", "*.key", "*.p12", "*.pfx", "id_rsa*", "id_ed25519*",
+    "*.keystore", "credentials*", "secrets.*", "*.secret", ".npmrc", ".pypirc",
+    ".netrc", "*.tfstate", "*.sqlite", "*.db",
+)
+# Generated or vendored trees: large, not the candidate's work, and noise for
+# claim extraction.
+SKIPPED_DIRS = frozenset(
+    {
+        ".git", "node_modules", "dist", "build", "out", "target", "vendor",
+        "__pycache__", ".venv", "venv", ".next", ".cache", "coverage",
+        ".idea", ".vscode", "bower_components", ".gradle",
+    }
+)
+MANIFESTS = (
+    "package.json", "pyproject.toml", "requirements.txt", "go.mod",
+    "Cargo.toml", "pom.xml", "build.gradle", "Gemfile", "composer.json",
+)
+
+
+def is_secret_name(name: str) -> bool:
+    lowered = name.casefold()
+    return any(fnmatch.fnmatch(lowered, pattern) for pattern in SECRET_PATTERNS)
+
+
+def is_excluded(rel_parts: tuple[str, ...]) -> bool:
+    """True for anything under a skipped directory or named like a secret."""
+    if any(part in SKIPPED_DIRS for part in rel_parts[:-1]):
+        return True
+    if rel_parts and rel_parts[-1] in SKIPPED_DIRS:
+        return True
+    return bool(rel_parts) and is_secret_name(rel_parts[-1])
 
 
 class ToolNotAllowed(RuntimeError):
@@ -80,7 +119,7 @@ class FsTools:
             return {"path": rel, "entries": [], "error": "not a directory"}
         entries: list[str] = []
         for child in sorted(path.iterdir(), key=lambda p: p.name.lower()):
-            if child.name == ".git":
+            if child.is_symlink() or is_excluded((child.name,)):
                 continue
             entries.append(child.name + ("/" if child.is_dir() else ""))
             if len(entries) >= MAX_LIST:
@@ -89,6 +128,8 @@ class FsTools:
 
     def _read_file(self, rel: str) -> dict[str, Any]:
         path = self._resolve(rel)
+        if is_excluded(path.relative_to(self.root).parts):
+            return {"path": rel, "text": "", "truncated": False, "error": "excluded"}
         if not path.is_file():
             return {"path": rel, "text": "", "truncated": False, "error": "not a file"}
         data = path.read_bytes()[: MAX_FILE_BYTES + 1]
@@ -108,14 +149,16 @@ class FsTools:
         path = self._resolve(rel or ".")
         hits: list[dict[str, Any]] = []
         files = [path] if path.is_file() else [
-            p for p in path.rglob("*") if p.is_file() and ".git" not in p.parts
+            p for p in path.rglob("*") if p.is_file() and not p.is_symlink()
         ]
         for file in files:
             if len(hits) >= MAX_GREP_HITS:
                 break
             try:
-                file.relative_to(self.root)
+                rel_parts = file.relative_to(self.root).parts
             except ValueError:
+                continue
+            if is_excluded(rel_parts):
                 continue
             blob = file.read_bytes()[:MAX_FILE_BYTES]
             if b"\x00" in blob:
@@ -215,6 +258,7 @@ class RepoIndexer:
         self._summary = summary or RepoSummary()
         self._steps = 0
         self._limited = False
+        self.manifests: list[Evidence] = []
 
     def run(self) -> IndexRun:
         self._trace.write(
@@ -235,6 +279,16 @@ class RepoIndexer:
             text = str(loaded.get("text") or "")
             if text:
                 evidence.append(Evidence(path=readme, text=text))
+                self._summary.bytes_read += len(text.encode("utf-8"))
+        # Build manifests show the stack the repository actually uses. They are
+        # recorded as source excerpts, not turned into claims.
+        for manifest in [name for name in MANIFESTS if name in entries][:2]:
+            if self._limited:
+                break
+            loaded = self._act("read_file", {"path": manifest})
+            text = str(loaded.get("text") or "")
+            if text:
+                self.manifests.append(Evidence(path=manifest, text=text[:4000]))
                 self._summary.bytes_read += len(text.encode("utf-8"))
         if not self._limited:
             self._act("grep", {"pattern": "def ", "path": "."})
@@ -324,12 +378,29 @@ def repo_size_bytes(root: Path) -> int:
 def shallow_clone(url: str, dest: Path, *, timeout_s: int = CLONE_TIMEOUT_S) -> None:
     """git clone --depth 1. Raises if git fails, times out, or the tree is too big."""
     dest.parent.mkdir(parents=True, exist_ok=True)
+    # Read-only, non-interactive, no hooks: never prompt for credentials, never
+    # follow a local-file transport, never materialise symlinks that could
+    # point outside the clone. Nothing in the clone is ever executed.
+    env = {
+        **os.environ,
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_ASKPASS": "",
+        "GIT_LFS_SKIP_SMUDGE": "1",
+    }
     proc = subprocess.run(
-        ["git", "clone", "--depth", "1", "--single-branch", url, str(dest)],
+        [
+            "git",
+            "-c", "core.symlinks=false",
+            "-c", "protocol.file.allow=never",
+            "-c", "core.hooksPath=/dev/null",
+            "clone", "--depth", "1", "--single-branch", "--no-tags",
+            url, str(dest),
+        ],
         capture_output=True,
         text=True,
         timeout=timeout_s,
         check=False,
+        env=env,
     )
     if proc.returncode != 0:
         raise RuntimeError((proc.stderr or proc.stdout or "git clone failed").strip())

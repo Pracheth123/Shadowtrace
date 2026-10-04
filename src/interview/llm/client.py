@@ -125,7 +125,12 @@ class GroqModelClient:
             }
         else:
             self._failover_roles = dict(groq.get("failover_roles") or {})
-        self._failover_to_mock = bool(groq.get("failover_to_mock", True))
+        # Degrading to the local mock is a development convenience only. In
+        # production a failed provider must surface as an error, never as
+        # canned text that looks like an interviewer.
+        self._failover_to_mock = bool(groq.get("failover_to_mock", True)) and not (
+            settings is not None and settings.is_production
+        )
         self._max_per_turn = int(groq.get("max_calls_per_turn", 3))
         self._limiter = get_shared_limiter(int(groq.get("requests_per_minute", 30)))
         self._budget = TurnCallBudget(self._max_per_turn)

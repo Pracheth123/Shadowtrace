@@ -50,6 +50,15 @@ class Outcome:
     decision: Decision
 
 
+def _evidence_kind(value: str):
+    from interview.session.roles import EvidenceKind
+
+    try:
+        return EvidenceKind(value) if value else EvidenceKind.CANDIDATE_ASSERTION
+    except ValueError:
+        return EvidenceKind.CANDIDATE_ASSERTION
+
+
 def phrase_probe(
     *,
     claim_text: str | None,
@@ -261,14 +270,18 @@ class LiveAgent:
 
         tools = self._tools
         state = tools.guard_state()
+        # A claim already probed this round is not offered again: the guard
+        # would reject the repeat anyway, and re-proposing it wastes the turn.
         evidence = tuple(
             EvidenceItem(
                 id=claim.id,
                 text=claim.text,
                 competency=claim.competency,
+                kind=_evidence_kind(getattr(claim, "evidence_kind", "")),
                 source_ref=getattr(claim, "source_ref", "") or claim.id,
             )
             for claim in tools.claims
+            if claim.id not in tools.probed
         )
         context = ProposalContext(
             spec=self._spec,
@@ -278,6 +291,8 @@ class LiveAgent:
             evidence=evidence,
             time_remaining_s=tools.time_remaining_s(),
             handoff=dict(self.handoff_context or {}),
+            # Rotates the role's phrasing so successive follow-ups differ.
+            probe_index=len(tools.asked),
         )
         return await self._proposer.propose(context)
 

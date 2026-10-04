@@ -73,6 +73,11 @@ class Claim(BaseModel):
     source: str
     source_path: str
     quote: str
+    # What the claim rests on. A resume or written background is the
+    # candidate's own assertion; a repository or work sample shows that the
+    # material exists — not who authored it. Absence of corroboration never
+    # counts against the candidate.
+    evidence_kind: str = "candidate_assertion"
 
 
 class ClaimsFile(BaseModel):

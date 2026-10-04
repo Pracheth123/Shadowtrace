@@ -9,46 +9,82 @@ import { useSession, type SessionOptions } from "@/lib/use-session";
 /**
  * App shell.
  *
- * Routing stays on the existing hash scheme rather than pulling in a router:
- * three views and one transition do not justify the dependency. `#results`
- * is linkable; setup and room follow session state.
+ * Hash routes, no router dependency:
+ *   #            setup → intake → preparation review
+ *   (room)       the live interview, entered from setup only
+ *   #results/ID  the report for one session, fetched by its id
+ *   #history     history and next practice, no session selected
  */
 
-type View = "setup" | "room" | "results";
+type Route =
+  | { view: "setup" }
+  | { view: "room" }
+  | { view: "results"; sessionId: string | null };
+
+function parseHash(): Route {
+  const hash = window.location.hash.replace(/^#/, "");
+  if (hash.startsWith("results/")) {
+    return { view: "results", sessionId: decodeURIComponent(hash.slice(8)) || null };
+  }
+  if (hash === "history" || hash === "results") return { view: "results", sessionId: null };
+  return { view: "setup" };
+}
 
 export default function App() {
   const session = useSession();
-  const [view, setView] = useState<View>(
-    window.location.hash.replace("#", "") === "results" ? "results" : "setup",
-  );
+  const [route, setRoute] = useState<Route>(parseHash);
 
   useEffect(() => {
     const onHash = () => {
-      const hash = window.location.hash.replace("#", "");
-      if (hash === "results") setView("results");
-      else if (hash === "") setView("setup");
+      setRoute((current) => (current.view === "room" ? current : parseHash()));
     };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
   const start = (options: SessionOptions) => {
-    session.start(options);
-    setView("room");
+    void session.start(options);
+    setRoute({ view: "room" });
   };
 
-  const finish = () => {
-    window.location.hash = "results";
-    setView("results");
+  const openSession = (sessionId: string) => {
+    window.location.hash = `results/${encodeURIComponent(sessionId)}`;
+    setRoute({ view: "results", sessionId });
+  };
+
+  const finish = (sessionId: string) => {
+    if (sessionId) openSession(sessionId);
+    else {
+      window.location.hash = "history";
+      setRoute({ view: "results", sessionId: null });
+    }
+  };
+
+  const toSetup = () => {
+    window.location.hash = "";
+    setRoute({ view: "setup" });
   };
 
   return (
     <div className="min-h-screen px-5 py-10 sm:px-8">
-      {view === "setup" && <SetupPage onStart={start} />}
-      {view === "room" && (
-        <InterviewRoom session={session} onFinished={finish} />
+      {route.view === "setup" && (
+        <SetupPage
+          onStart={start}
+          onOpenHistory={() => {
+            window.location.hash = "history";
+            setRoute({ view: "results", sessionId: null });
+          }}
+        />
       )}
-      {view === "results" && <ResultsDashboard />}
+      {route.view === "room" && <InterviewRoom session={session} onFinished={finish} />}
+      {route.view === "results" && (
+        <ResultsDashboard
+          key={route.sessionId ?? "history"}
+          sessionId={route.sessionId}
+          onOpenSession={openSession}
+          onStartAnother={toSetup}
+        />
+      )}
       <Toaster />
     </div>
   );

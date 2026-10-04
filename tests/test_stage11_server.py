@@ -93,7 +93,7 @@ def test_health_reports_the_stage_and_the_panel_flag(server, monkeypatch) -> Non
     monkeypatch.delenv("PANEL_MODE", raising=False)
     with TestClient(server.app) as client:
         body = client.get("/health").json()
-    assert body["stage"] == 11
+    assert body["stage"] == 15
     assert body["panel_mode"] is False
     assert body["session_limit"] == 8
 
@@ -326,55 +326,14 @@ def test_push_to_talk_is_logged_and_gates_an_unheld_barge_in(server) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def test_intake_is_rate_limited_per_candidate(server) -> None:
+def test_the_stub_intake_and_unauthenticated_delete_are_gone(server) -> None:
+    """
+    Stage 15 removed `/intake` (it acknowledged without running intake) and
+    the unauthenticated `/me/delete` (anyone could erase anyone by naming
+    them). The real endpoints live under /api and require the bearer token;
+    they are exercised in test_stage15_journey.py.
+    """
     with TestClient(server.app) as client:
-        for _ in range(2):
-            ok = client.post(
-                "/intake", json={"candidate_id": "ada", "repo_url": "https://x/y"}
-            )
-            assert ok.status_code == 200
-            assert ok.json()["accepted"] is True
-        blocked = client.post(
-            "/intake", json={"candidate_id": "ada", "repo_url": "https://x/y"}
-        )
-        assert blocked.status_code == 429
-        assert "Retry-After" in blocked.headers
-        # Another candidate has their own budget.
-        assert (
-            client.post(
-                "/intake", json={"candidate_id": "grace", "repo_url": "https://x/y"}
-            ).status_code
-            == 200
-        )
-        assert client.post("/intake", json={}).status_code == 400
-
-
-def test_intake_names_the_fallback_it_would_take(server) -> None:
-    with TestClient(server.app) as client:
-        resume_only = client.post("/intake", json={"candidate_id": "ada"}).json()
-        assert resume_only["fallbacks"] == ["resume_only"]
-        local = client.post(
-            "/intake", json={"candidate_id": "grace", "repo_path": "/tmp/repo"}
-        ).json()
-        assert local["fallbacks"] == ["fallback_repo"]
-
-
-def test_delete_my_data_over_http_returns_a_manifest(server, tmp_path: Path) -> None:
-    logs = tmp_path / "logs"
-    (logs / "sess-x").mkdir(parents=True, exist_ok=True)
-    (logs / "sess-x" / "session.jsonl").write_text("{}", encoding="utf-8")
-    intake = tmp_path / "intake" / "ada"
-    intake.mkdir(parents=True, exist_ok=True)
-    (intake / "claims.json").write_text("{}", encoding="utf-8")
-
-    with TestClient(server.app) as client:
-        body = client.post(
-            "/me/delete", json={"candidate_id": "ada", "session_ids": ["sess-x"]}
-        ).json()
-        assert body["candidate_id"] == "ada"
-        assert body["clean"] is True
-        assert not intake.exists()
-        assert client.post("/me/delete", json={}).status_code == 400
-        # An id that is not a single path segment is refused, not sanitised.
-        bad = client.post("/me/delete", json={"candidate_id": "../escape"})
-        assert bad.status_code == 400
+        assert client.post("/intake", json={"candidate_id": "ada"}).status_code in (404, 405)
+        assert client.post("/me/delete", json={"candidate_id": "ada"}).status_code in (404, 405)
+        assert client.post("/api/me/delete").status_code == 401

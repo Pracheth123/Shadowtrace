@@ -331,6 +331,32 @@ class SessionComplete(EventBase):
     lane: Literal["voice", "text"] = "voice"
     # Personas that held the floor, in first-speak order. Empty outside panel mode.
     personas: list[str] = Field(default_factory=list)
+    # Stage 15, additive. Per-round coverage from the coordinator (empty for a
+    # single-pack session) and why the session ended: "complete" (every round
+    # finished), "limit" (time or turn cap), "client" (the candidate ended it),
+    # "disconnect", "agent". Recorded so a report can say honestly that an
+    # interview ended early instead of implying full coverage.
+    rounds: list[dict[str, Any]] = Field(default_factory=list)
+    ended_reason: str = ""
+
+
+class RoundTransition(EventBase):
+    """
+    One sequential round handed over to the next — stage 15.
+
+    Session-scoped like session_complete. Carries the coordinator's coverage for
+    the round that ended and the *size* of the handoff (statements and open
+    questions), never its content's judgement: ratings do not cross rounds.
+    """
+    type: Literal["round_transition"] = "round_transition"
+    turn_id: None = None
+    from_round: str
+    to_round: str
+    reason: Literal["coverage", "time"]
+    spine_covered: int
+    spine_total: int
+    handoff_statements: int
+    handoff_unresolved: int
 
 
 class FallbackUsed(EventBase):
@@ -348,6 +374,7 @@ class FallbackUsed(EventBase):
         "fallback_repo",
         "text_lane",
         "ws_reconnect",
+        "voice_to_text",
     ]
     detail: str
 
@@ -397,6 +424,7 @@ Event = Annotated[
         SessionComplete,
         FallbackUsed,
         ModelCall,
+        RoundTransition,
     ],
     Field(discriminator="type"),
 ]

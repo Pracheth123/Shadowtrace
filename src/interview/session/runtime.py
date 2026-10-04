@@ -18,6 +18,22 @@ Stage 11 adds two orthogonal switches:
     was with one agent.
   - `lane` — "voice" or "text". The text lane is the same bus, agent, guard and
     evaluation with no audio; the injected SpeakPort is what differs.
+
+Stage 15 adds **rounds mode**, used whenever `SessionConfig.interview` is set
+(every browser session that went through intake). The `Coordinator` owns round
+order — HR → Hiring Manager → Domain Specialist for a Full Interview, or one
+round alone. Each round gets its own `SessionTools` (its pack's spine, its own
+coverage and depth counters, the coordinator's time slice) and one `LiveAgent`
+carrying that round's `RoleSpec` and proposer. The guard is the same pure
+function for every round. One round is active at a time, so one voice speaks.
+A round ends when its agent has nothing left in scope or its slice runs out;
+the outgoing interviewer says a handover line, the coordinator freezes a
+handoff brief (statements and open questions, never ratings) and the next
+round opens with its first spine question.
+
+Claims come from the candidate's own intake via `claims_override`. The stage-5
+fixture is only loaded when neither `claims_override` nor `claims_path` is set,
+which the server never does.
 """
 
 from __future__ import annotations
@@ -36,6 +52,7 @@ from interview.events.schema import (
     FallbackUsed,
     FinalTranscript,
     IntensityChange,
+    RoundTransition,
     RouteDecision,
     SessionComplete,
     Truncate,
@@ -48,12 +65,14 @@ from interview.session.interviewer import LeadInterviewer
 from interview.session.panel import Panel
 from interview.session.router import concession_line, draft_is_stale, route_answer
 from interview.session.signals import ClaimHint, SignalExtractor, SignalReading
-from interview.session.tools import SessionTools, load_claims_fixture
+from interview.session.tools import Claim, SessionTools, load_claims_fixture
 from interview.session.transcript import TranscriptWriter
 from interview.session.turn_controller import TurnController
 
 if TYPE_CHECKING:
     from interview.events.bus import EventBus
+    from interview.session.coordinator import Coordinator
+    from interview.session.interview_config import InterviewConfig
 
 log = logging.getLogger(__name__)
 
@@ -65,6 +84,38 @@ CLOSER = (
     "That's all the time we have. Thanks for walking me through your work — "
     "you'll get a feedback report shortly."
 )
+
+# Rounds mode. What the candidate hears depends on why the interview ended, so
+# an early stop is not dressed up as a completed interview.
+ROUND_CLOSERS = {
+    "complete": (
+        "That's the end of the interview. Thank you — your feedback report is "
+        "being prepared now."
+    ),
+    "limit": (
+        "That's all the time we have. Thank you — your feedback report is being "
+        "prepared, and it will say which parts we did not reach."
+    ),
+    "client": (
+        "Thanks — we'll stop here. Your feedback will only cover what we got to."
+    ),
+}
+
+
+def round_greeting(label: str, *, first: bool, round_count: int, persona: str) -> str:
+    """The new interviewer introducing themselves at the start of a round."""
+    intro = {
+        "recruiter": "I'm the recruiter, and I'd like to start with your background.",
+        "hiring_manager": "I'm the hiring manager. I want to understand how you work.",
+    }.get(persona, f"I'm the {label.lower()}, and I'll go deeper into the work itself.")
+    if first:
+        rounds = (
+            f"This is a {round_count}-round practice interview. "
+            if round_count > 1
+            else ""
+        )
+        return f"Hi, thanks for joining. {rounds}{intro}"
+    return f"Hi. {intro}"
 
 
 class SpeakPort(Protocol):
@@ -92,6 +143,9 @@ class PreparedDraft:
     # Who drafted it. The same voice speaks it, so a follow-up does not change
     # speaker between the draft and the line.
     persona: str | None = None
+    # Rounds mode: the round the draft was made in. A draft from a round that
+    # has since ended is never spoken.
+    round_index: int = -1
 
 
 @dataclass
@@ -107,6 +161,12 @@ class SessionConfig:
     max_tool_calls: int | None = None
     # Stage 6 claims.json. Unset keeps the stage-5 fixture.
     claims_path: str | None = None
+    # Stage 15. The candidate's own claims, loaded by the server from their
+    # intake. An empty list means "no claims" — never "use the fixture".
+    claims_override: list[Claim] | None = None
+    # Stage 15. The validated interview configuration from intake. When set,
+    # the session runs in rounds mode under the coordinator.
+    interview: "InterviewConfig | None" = None
     # Stage 11. Panel mode needs a pack with a panel roster; without one the
     # session runs single-voice and `panel.enabled` stays False.
     panel_mode: bool = False
@@ -150,6 +210,11 @@ class LiveSession:
         self._dropped_intensity = False
         self._recovered_intensity = False
         self._steady_turns = 0
+        self._coordinator: "Coordinator | None" = None
+        self._round_started_at = time.monotonic()
+        self._round_followups = 0
+        self._current_competency = ""
+        self.ended_reason = ""
         self._model_client = None
         if not self.config.use_mock_llm:
             from interview.llm.client import GroqModelClient
@@ -175,12 +240,9 @@ class LiveSession:
         except PackLoadError as exc:
             log.warning("Pack %s unavailable (%s); using freeform interviewer", self.config.pack_id, exc)
             return
-        claims_file = (
-            Path(self.config.claims_path) if self.config.claims_path else None
-        )
         tools = SessionTools(
             pack,
-            load_claims_fixture(claims_file),
+            self._claims(),
             intensity=self.config.intensity,
         )
         kwargs: dict = {
@@ -223,6 +285,382 @@ class LiveSession:
             persona=self._current_persona,
         )
 
+    def _claims(self) -> list[Claim]:
+        """Intake claims when given; the stage-5 fixture only for bare test sessions."""
+        if self.config.claims_override is not None:
+            return list(self.config.claims_override)
+        claims_file = (
+            Path(self.config.claims_path) if self.config.claims_path else None
+        )
+        return load_claims_fixture(claims_file)
+
+    # ------------------------------------------------------------------
+    # Rounds mode (stage 15)
+    # ------------------------------------------------------------------
+
+    @property
+    def coordinator(self) -> "Coordinator | None":
+        return self._coordinator
+
+    def _round_index(self) -> int:
+        return self._coordinator.index if self._coordinator is not None else -1
+
+    def _bind_round(self) -> None:
+        """Fresh tools and one role agent for the coordinator's active round."""
+        from interview.session.proposer import DeterministicProposer, ModelProposer
+
+        coordinator = self._coordinator
+        assert coordinator is not None
+        plan = coordinator.current
+        tools = SessionTools(
+            plan.pack,
+            self._claims(),
+            intensity=self.config.intensity,
+            time_budget_s=plan.seconds,
+        )
+        # Every question already asked in an earlier round counts as asked, so
+        # the guard's repeat rule works across rounds, not only within one.
+        tools.asked = list(coordinator.questions_asked_everywhere)
+        if self._model_client is not None:
+            proposer = ModelProposer(plan.spec, self._model_client)
+        else:
+            proposer = DeterministicProposer(plan.spec)
+        kwargs: dict = {"scripted_intents": self.config.scripted_intents}
+        if self.config.max_tool_calls is not None:
+            kwargs["max_tool_calls"] = self.config.max_tool_calls
+        agent = LiveAgent(
+            self.bus,
+            self.session_id,
+            tools,
+            persona=plan.spec.persona,
+            spec=plan.spec,
+            proposer=proposer,
+            **kwargs,
+        )
+        agent.handoff_context = coordinator.context_for_current()
+        self._tools = tools
+        self._agent = agent
+        self._agents = {plan.spec.persona: agent}
+        self._round_started_at = time.monotonic()
+        self._round_followups = 0
+        self.transcript.current_round = plan.round.value
+        self.transcript.current_speaker_label = plan.label
+
+    def _note_round_elapsed(self) -> None:
+        if self._coordinator is not None:
+            self._coordinator.note_elapsed(time.monotonic() - self._round_started_at)
+
+    async def _start_rounds(self) -> None:
+        from interview.session.coordinator import Coordinator
+
+        interview = self.config.interview
+        assert interview is not None
+        self._coordinator = Coordinator(interview)
+        # The whole-interview cap is the configured budget plus a short grace,
+        # not the single-pack default of six turns.
+        self.config.max_minutes = interview.total_seconds / 60.0 + 3.0
+        self.config.max_turns = max(self.config.max_turns, 80)
+        self._bind_round()
+        self._extractor = SignalExtractor(
+            claims=[ClaimHint(id=claim.id, text=claim.text) for claim in self._claims()]
+        )
+        self._controller = TurnController(
+            self.bus,
+            self.session_id,
+            self._extractor,
+            on_likely=self._speculate,
+            on_barge=self._cancel_speculative,
+            persona=self._current_persona,
+        )
+        self._controller.attach()
+        if self.config.lane == "text":
+            await self.note_fallback(
+                "text_lane",
+                "no audio lane: delivery is not assessed for this session",
+            )
+        await self._open_round("turn-opener", first=True)
+
+    async def _open_round(self, turn_id: str, *, first: bool) -> None:
+        """New interviewer: introduce, then the round's first spine question."""
+        coordinator = self._coordinator
+        assert coordinator is not None and self._agent is not None
+        plan = coordinator.current
+        outcome = await self._run_agent(turn_id, self.turn_count)
+        if self._closed:
+            return
+        if outcome.kind == "end" or not outcome.text:
+            await self._advance_or_end(turn_id, "coverage")
+            return
+        self._record_question(outcome)
+        greeting = round_greeting(
+            plan.label,
+            first=first,
+            round_count=len(coordinator.plans),
+            persona=plan.spec.persona,
+        )
+        await self._speak_question(
+            f"{greeting} {outcome.text}",
+            turn_id,
+            str(uuid.uuid4()),
+            persona=plan.spec.persona,
+        )
+
+    def _proposer_fallbacks(self) -> int:
+        proposer = getattr(self._agent, "_proposer", None)
+        return int(getattr(proposer, "fallbacks_used", 0) or 0)
+
+    async def _run_agent(self, turn_id: str, turn_index: int) -> Outcome:
+        """
+        One agent step, with provider failure made visible.
+
+        When the interviewer model fails or returns an unusable proposal, the
+        role's deterministic proposer supplies the move (still guard-checked,
+        still from the pack and the candidate's own words). That is logged as a
+        fallback and the candidate is told, so a degraded question is never
+        presented as the model's.
+        """
+        assert self._agent is not None
+        before = self._proposer_fallbacks()
+        outcome = await self._agent.run(turn_id=turn_id, turn_index=turn_index)
+        if self._proposer_fallbacks() > before:
+            await self.note_fallback(
+                "provider_failover",
+                "interviewer model unavailable or invalid; deterministic role proposer used",
+                turn_id=turn_id,
+            )
+            if self.on_wire:
+                await self.on_wire(
+                    {
+                        "type": "provider_warning",
+                        "detail": (
+                            "The interviewer model did not respond usefully, so this "
+                            "question came from the interview plan instead."
+                        ),
+                    }
+                )
+        return outcome
+
+    def _record_question(self, outcome: Outcome) -> None:
+        decision = outcome.decision
+        if decision.kind == "probe":
+            self._round_followups += 1
+        self._current_competency = decision.competency
+        if self._coordinator is not None:
+            self._coordinator.note_question(
+                outcome.text,
+                spine_id=decision.spine_id if decision.kind == "spine" else None,
+            )
+
+    async def _advance_or_end(self, turn_id: str, reason: str) -> None:
+        """Close the active round: hand over to the next, or end the interview."""
+        coordinator = self._coordinator
+        assert coordinator is not None
+        self._note_round_elapsed()
+        if coordinator.is_last_round:
+            await self.end(reason="complete" if reason == "coverage" else "limit")
+            return
+        old = coordinator.current
+        progress = coordinator.progress
+        if self._tools is not None:
+            for spine_id in self._tools.outstanding:
+                coordinator.note_unresolved(
+                    f"Not reached in the {old.label.lower()} round: "
+                    f"{old.pack.spine_item(spine_id).text}"
+                )
+        # The outgoing interviewer says the handover, in their own voice.
+        await self._speak_fixed(coordinator.transition_line(), turn_id=turn_id)
+        if self._closed:
+            return
+        brief = coordinator.advance()
+        await self.bus.emit(
+            RoundTransition(
+                session_id=self.session_id,
+                producer="coordinator",
+                from_round=old.round.value,
+                to_round=coordinator.current.round.value,
+                reason="coverage" if reason == "coverage" else "time",
+                spine_covered=len(progress.spine_covered),
+                spine_total=progress.spine_total,
+                handoff_statements=len(brief.statements) if brief else 0,
+                handoff_unresolved=len(brief.unresolved) if brief else 0,
+            )
+        )
+        self._bind_round()
+        if self.on_wire:
+            await self.on_wire(
+                {
+                    "type": "round_transition",
+                    "from_round": old.round.value,
+                    "from_label": old.label,
+                    "to_round": coordinator.current.round.value,
+                    "to_label": coordinator.current.label,
+                    "reason": reason,
+                    "covered": len(progress.spine_covered),
+                    "total": progress.spine_total,
+                    "carried_statements": len(brief.statements) if brief else 0,
+                    "carried_open_questions": len(brief.unresolved) if brief else 0,
+                }
+            )
+        await self._open_round(f"{turn_id}-open", first=False)
+
+    async def _on_final_rounds(self, event: FinalTranscript) -> None:
+        if self._closed or not event.text.strip():
+            return
+        coordinator = self._coordinator
+        assert coordinator is not None and self._agent is not None
+        self.turn_count += 1
+        turn_id = event.turn_id or str(uuid.uuid4())
+        self.history.append({"role": "user", "content": event.text})
+        speech_s = None
+        if event.word_timings:
+            speech_s = max(
+                0.0,
+                (event.word_timings[-1].end_ms - event.word_timings[0].start_ms) / 1000.0,
+            )
+        self.transcript.add_candidate(
+            turn_id=turn_id,
+            text=event.text,
+            t_start=float(event.t_emit or 0.0),
+            t_end=float(event.t_audio_in),
+            speech_s=speech_s if not event.timings_estimated else None,
+            word_count=len(event.text.split()),
+        )
+        if self._tools is not None:
+            self._tools.add_transcript(event.text)
+        self._agent.note_answer(event.text)
+        coordinator.note_answer(turn_id, event.text, topic=self._current_competency)
+        if self._extractor is not None:
+            reading = self._extractor.update(event.text, looks_complete=True)
+            await self._note_distress(turn_id, list(reading.distress_triggers))
+        if self.on_wire:
+            await self.on_wire({"type": "turn_end", "turn_id": event.turn_id})
+
+        if self._gen_task and not self._gen_task.done():
+            try:
+                await self._gen_task
+            except asyncio.CancelledError:
+                pass
+        self._accepted_turn = turn_id
+        self._gen_task = asyncio.create_task(self._round_reply(turn_id, event))
+        try:
+            await self._gen_task
+        except asyncio.CancelledError:
+            pass
+
+    async def _round_reply(self, turn_id: str, event: FinalTranscript) -> None:
+        coordinator = self._coordinator
+        assert coordinator is not None and self._agent is not None
+        self._note_round_elapsed()
+        if self._should_close():
+            await self.end(reason="limit")
+            return
+        if coordinator.progress.time_exhausted:
+            await self._advance_or_end(turn_id, "time")
+            return
+
+        async with self._turn_lock(turn_id):
+            self._finished.add(turn_id)
+            draft = self._drafts.pop(turn_id, None)
+        outcome: Outcome | None = None
+        # A speculative draft is only reused for a spine question in the same
+        # round. Spine text does not depend on the answer; a follow-up does,
+        # and a draft made from a partial would anchor on words that may not
+        # be in the final answer.
+        if (
+            draft is not None
+            and draft.round_index == self._round_index()
+            and draft.outcome.kind == "spine"
+            and not draft_is_stale(draft.basis, event.text)
+        ):
+            self.valid_drafts += 1
+            await self._agent.commit_outcome(turn_id, draft.outcome.decision)
+            outcome = draft.outcome
+        else:
+            if draft is not None:
+                self.stale_drafts += 1
+            outcome = await self._run_agent(turn_id, self.turn_count - 1)
+        if self._closed:
+            return
+        if outcome.kind == "end" or not outcome.text:
+            await self._advance_or_end(turn_id, "coverage")
+            return
+        self._record_question(outcome)
+        await self._speak_question(
+            outcome.text,
+            turn_id,
+            str(uuid.uuid4()),
+            persona=coordinator.current.spec.persona,
+        )
+
+    def progress_payload(self) -> dict | None:
+        """
+        Server-reported progress for the room. Core (spine) questions are
+        counted separately from follow-ups, per round, from the guard's own
+        coverage — the browser no longer guesses a total.
+        """
+        coordinator = self._coordinator
+        if coordinator is not None:
+            rounds = []
+            for index, progress in enumerate(coordinator.all_progress):
+                state = (
+                    "done"
+                    if index < coordinator.index
+                    else "active"
+                    if index == coordinator.index
+                    else "pending"
+                )
+                rounds.append(
+                    {
+                        "round": progress.plan.round.value,
+                        "label": progress.plan.label,
+                        "state": state,
+                        "core_asked": len(progress.spine_covered),
+                        "core_total": progress.spine_total,
+                    }
+                )
+            current = coordinator.progress
+            remaining = (
+                self._tools.time_remaining_s() if self._tools is not None else 0.0
+            )
+            return {
+                "type": "progress",
+                "mode": "rounds",
+                "round": coordinator.current.round.value,
+                "round_label": coordinator.current.label,
+                "round_index": coordinator.index,
+                "round_count": len(coordinator.plans),
+                "core_asked": len(current.spine_covered),
+                "core_total": current.spine_total,
+                "follow_ups": self._round_followups,
+                "answers": self.turn_count,
+                "intensity": self.config.intensity,
+                "round_seconds_remaining": round(remaining),
+                "rounds": rounds,
+            }
+        if self._tools is not None:
+            tools = self._tools
+            return {
+                "type": "progress",
+                "mode": "single",
+                "round": None,
+                "round_label": tools.pack.title,
+                "round_index": 0,
+                "round_count": 1,
+                "core_asked": len(tools.covered),
+                "core_total": len(tools.pack.spine),
+                "follow_ups": max(0, len(tools.asked) - len(tools.covered)),
+                "answers": self.turn_count,
+                "intensity": self.config.intensity,
+                "round_seconds_remaining": round(tools.time_remaining_s()),
+                "rounds": [],
+            }
+        return None
+
+    async def _emit_progress(self) -> None:
+        payload = self.progress_payload()
+        if payload is not None and self.on_wire:
+            await self.on_wire(payload)
+
     # ------------------------------------------------------------------
     # Panel floor
     # ------------------------------------------------------------------
@@ -235,6 +673,8 @@ class LiveSession:
         speculative loop, `likely_next`, `floor_granted` and the spoken line
         all name the same voice.
         """
+        if self._coordinator is not None:
+            return self._coordinator.current.spec.persona
         if self._panel is None or not self._panel.enabled or self._tools is None:
             return None
         # `propose` is the same pure function the agent uses, over the same
@@ -251,9 +691,18 @@ class LiveSession:
         return self._agent
 
     def _voice_for(self, persona: str | None) -> str:
+        if self._coordinator is not None:
+            return self._coordinator.current.spec.voice
         if self._panel is None or not self._panel.enabled:
             return ""
         return self._panel.role(persona).voice
+
+    def _speaker_label(self, persona: str | None) -> str | None:
+        if self._coordinator is not None:
+            return self._coordinator.current.label
+        if self._panel and self._panel.enabled:
+            return self._panel.role(persona).label
+        return None
 
     async def note_fallback(self, kind: str, detail: str, turn_id: str | None = None) -> None:
         """
@@ -281,6 +730,9 @@ class LiveSession:
 
     async def start(self) -> None:
         self._started_at = time.monotonic()
+        if self.config.interview is not None:
+            await self._start_rounds()
+            return
         self._bind_pack()
         if self._controller is not None:
             self._controller.attach()
@@ -295,9 +747,21 @@ class LiveSession:
         if self._closed:
             return
         self._closed = True
+        self.ended_reason = reason
+        # A reply task that is the caller (the round ending itself) must not
+        # cancel itself; any other in-flight generation is stopped.
+        if self._gen_task is not None and self._gen_task is asyncio.current_task():
+            self._gen_task = None
         await self._cancel_generation("session_end")
-        if reason != "closer_already_spoken":
-            await self._speak_fixed(CLOSER, turn_id="turn-closer")
+        self._note_round_elapsed()
+        if reason not in ("closer_already_spoken", "disconnect"):
+            closer = (
+                ROUND_CLOSERS.get(reason, ROUND_CLOSERS["limit"])
+                if self._coordinator is not None
+                else CLOSER
+            )
+            await self._speak_fixed(closer, turn_id="turn-closer")
+        rounds = self._coordinator.summary() if self._coordinator is not None else []
         Path(self.transcript_path).parent.mkdir(parents=True, exist_ok=True)
         self.transcript.write(Path(self.transcript_path))
         await self.bus.emit(
@@ -311,12 +775,17 @@ class LiveSession:
                 intensity_history=self._intensity_history,
                 lane="text" if self.config.lane == "text" else "voice",
                 personas=self._panel.spoken_order if self._panel else [],
+                rounds=rounds,
+                ended_reason=reason,
             )
         )
         if self.on_wire:
             await self.on_wire(
                 {
                     "type": "session_complete",
+                    "session_id": self.session_id,
+                    "rounds": rounds,
+                    "ended_reason": reason,
                     "transcript_path": self.transcript_path,
                     "log_path": self.log_path,
                     "pack_id": self.config.pack_id,
@@ -328,6 +797,9 @@ class LiveSession:
 
     async def _on_final(self, event: FinalTranscript) -> None:
         if self._closed:
+            return
+        if self._coordinator is not None:
+            await self._on_final_rounds(event)
             return
         self.turn_count += 1
         self.history.append({"role": "user", "content": event.text})
@@ -462,11 +934,7 @@ class LiveSession:
                     "turn_id": turn_id,
                     "text": text,
                     "persona": persona,
-                    "speaker_label": (
-                        self._panel.role(persona).label
-                        if self._panel and self._panel.enabled
-                        else None
-                    ),
+                    "speaker_label": self._speaker_label(persona),
                 }
             )
             await self.on_wire(
@@ -536,6 +1004,7 @@ class LiveSession:
                 concession=concession_line(question) if question else "",
                 claim_hits=list(reading.claim_hits),
                 persona=persona,
+                round_index=self._round_index(),
             )
 
     async def _cancel_speculative(self, _turn_id: str) -> None:
@@ -645,6 +1114,9 @@ class LiveSession:
                 persona=persona,
             )
         )
+        # Progress goes out with the question it describes, so the room's
+        # counter changes when the candidate sees the new question.
+        await self._emit_progress()
         await self._deliver(text, turn_id, utterance_id, persona=persona)
 
     async def _note_distress(self, turn_id: str, triggers: list[str]) -> None:
@@ -715,11 +1187,14 @@ class LiveSession:
         utterance_id = str(uuid.uuid4())
         # Opener and closer always come from the lead: they are the room
         # speaking, not one panel member's question.
-        persona = (
-            self._panel.persona_for_log(self._panel.lead.persona)
-            if self._panel
-            else None
-        )
+        if self._coordinator is not None:
+            persona = self._coordinator.current.spec.persona
+        else:
+            persona = (
+                self._panel.persona_for_log(self._panel.lead.persona)
+                if self._panel
+                else None
+            )
         self.history.append({"role": "assistant", "content": text})
         await self.bus.emit(
             DraftReady(

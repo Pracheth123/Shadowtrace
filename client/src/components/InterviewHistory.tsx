@@ -63,8 +63,8 @@ export function InterviewHistory({
   return (
     <Table>
       <TableCaption>
-        Every practice session on this pack. Sessions in other packs are not
-        comparable and are listed separately.
+        Every session you have run. Scores are only compared between sessions
+        with the same profession, round selection and answer mode.
       </TableCaption>
       <TableHeader>
         <TableRow>
@@ -111,10 +111,10 @@ export function InterviewHistory({
                 <Button
                   variant="ghost"
                   size="sm"
-                  disabled={row.status !== "completed"}
+                  disabled={row.status === "in_progress"}
                   onClick={() => onViewFeedback?.(row)}
                 >
-                  View feedback
+                  {row.status === "completed" ? "View feedback" : "View status"}
                 </Button>
               </TableCell>
             </TableRow>

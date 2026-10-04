@@ -10,3 +10,6 @@ dist/
 .env
 .env.*
 !.env.example
+
+# Candidate data: intakes, transcripts, reports, report store. Never commit.
+data/

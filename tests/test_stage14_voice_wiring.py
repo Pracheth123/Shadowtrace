@@ -484,13 +484,13 @@ def test_server_no_longer_discards_microphone_frames() -> None:
 
     body = Path("src/interview/server.py").read_text(encoding="utf-8")
     # Frames are forwarded when a voice session exists.
-    assert "await voice.push_audio(message[\"bytes\"])" in body
+    assert "push_audio(message[\"bytes\"])" in body
     # The silence burst is confined to the explicit mock lane.
-    assert "if voice is None and lane != \"text\":" in body
+    assert "if ctx.voice is None and live.config.lane != \"text\":" in body
     # Real provider mode refuses rather than faking.
-    assert "Voice interviews need DEEPGRAM_API_KEY" in body
+    assert "Voice interviews need a speech provider" in body
     # Barge-in reaches the provider and the browser.
-    assert "await voice.barge_in(" in body
+    assert "await ctx.voice.barge_in(" in body
     # Push-to-talk gates the real stream.
     assert "voice.set_muted(push_to_talk)" in body
 

@@ -17,7 +17,11 @@ const Waveform = lazy(() =>
   })),
 );
 
-const TOTAL_QUESTIONS = 10;
+const DIFFICULTY_LABEL: Record<string, string> = {
+  coach: "Coach",
+  realistic: "Realistic",
+  panel: "Hard",
+};
 
 const toneClasses = {
   idle: "text-muted-foreground",
@@ -28,7 +32,7 @@ const toneClasses = {
 
 export type InterviewRoomProps = {
   session: ReturnType<typeof useSession>;
-  onFinished: () => void;
+  onFinished: (sessionId: string) => void;
 };
 
 export function InterviewRoom({ session, onFinished }: InterviewRoomProps) {
@@ -41,7 +45,7 @@ export function InterviewRoom({ session, onFinished }: InterviewRoomProps) {
     session.status,
     session.statusDetail,
   );
-  const answered = Math.min(TOTAL_QUESTIONS, session.turnCount);
+  const progress = session.progress;
 
   // Local preview only. The stream is attached to a <video> element and
   // nothing else: no frame is encoded, sent to the server, or stored. Video is
@@ -74,8 +78,8 @@ export function InterviewRoom({ session, onFinished }: InterviewRoomProps) {
 
   const finish = () => {
     videoStream?.getTracks().forEach((track) => track.stop());
-    session.end();
-    onFinished();
+    if (session.status !== "complete") session.end();
+    onFinished(session.sessionId);
   };
 
   return (
@@ -86,27 +90,103 @@ export function InterviewRoom({ session, onFinished }: InterviewRoomProps) {
           <Badge variant={session.lane === "text" ? "muted" : "secondary"}>
             {session.lane === "text" ? "text lane" : "voice"}
           </Badge>
-          {session.voiceInfo && session.voiceInfo.provider !== "deepgram" && (
-            <Badge variant="outline" title="Not a real provider session">
-              mock audio
+          {session.lane === "voice" &&
+            session.voiceInfo &&
+            session.voiceInfo.provider !== "deepgram" && (
+              <Badge variant="outline" title="Not a real provider session">
+                mock audio
+              </Badge>
+            )}
+          {session.interviewer === "deterministic" && (
+            <Badge
+              variant="outline"
+              title="No interviewer model is configured; questions come from the interview plan"
+            >
+              development interviewer
             </Badge>
           )}
+          <Badge variant="muted">
+            {DIFFICULTY_LABEL[session.intensity] ?? session.intensity} difficulty
+          </Badge>
         </div>
         <p className={cn("text-sm", toneClasses[tone])} aria-live="polite">
           {statusText}
         </p>
       </header>
 
-      <div className="flex flex-col gap-2">
-        <Progress
-          value={answered}
-          max={TOTAL_QUESTIONS}
-          label={`${answered} of ${TOTAL_QUESTIONS} questions completed`}
-        />
-        <p className="text-xs text-muted-foreground">
-          {answered} of {TOTAL_QUESTIONS} questions completed
+      {progress && progress.round_count > 1 && (
+        <ol className="flex flex-wrap gap-2 text-xs" aria-label="Interview rounds">
+          {progress.rounds.map((item, index) => (
+            <li
+              key={item.round}
+              className={cn(
+                "rounded-full border px-3 py-1",
+                item.state === "active" && "border-primary text-primary",
+                item.state === "done" && "border-border text-muted-foreground line-through",
+                item.state === "pending" && "border-dashed border-border text-muted-foreground",
+              )}
+            >
+              {index + 1}. {item.label}
+            </li>
+          ))}
+        </ol>
+      )}
+
+      {progress ? (
+        <div className="flex flex-col gap-2">
+          <Progress
+            value={progress.core_asked}
+            max={Math.max(1, progress.core_total)}
+            label={`${progress.round_label}: core question ${progress.core_asked} of ${progress.core_total}`}
+          />
+          <p className="text-xs text-muted-foreground">
+            {progress.round_label}
+            {progress.round_count > 1
+              ? ` (round ${progress.round_index + 1} of ${progress.round_count})`
+              : ""}
+            : core question {progress.core_asked} of {progress.core_total} ·{" "}
+            {progress.follow_ups} follow-up{progress.follow_ups === 1 ? "" : "s"} ·{" "}
+            {progress.answers} answer{progress.answers === 1 ? "" : "s"} so far
+          </p>
+        </div>
+      ) : (
+        <p className="text-xs text-muted-foreground">Waiting for the first question…</p>
+      )}
+
+      {session.roundNotice && (
+        <p className="rounded-md bg-muted px-3 py-2 text-sm" aria-live="polite">
+          Handover: {session.roundNotice.fromLabel} → {session.roundNotice.toLabel}.{" "}
+          <span className="text-muted-foreground">
+            Carried forward: {session.roundNotice.carried} of your statements and{" "}
+            {session.roundNotice.open} open question
+            {session.roundNotice.open === 1 ? "" : "s"} — no ratings.
+          </span>
         </p>
-      </div>
+      )}
+
+      {session.providerWarning && (
+        <p className="rounded-md bg-warning/10 px-3 py-2 text-sm text-warning">
+          {session.providerWarning}
+        </p>
+      )}
+
+      {session.voiceProblem && session.lane === "voice" && (
+        <div role="alert" className="flex flex-wrap items-center gap-3 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          <p className="flex-1">Voice problem: {session.voiceProblem}</p>
+          <Button variant="outline" size="sm" onClick={session.switchToText}>
+            Continue by typing
+          </Button>
+        </div>
+      )}
+
+      {session.status === "complete" && (
+        <div className="flex items-center gap-3 rounded-md bg-muted px-3 py-2 text-sm">
+          <p className="flex-1">The interview has finished. Your feedback is being prepared.</p>
+          <Button size="sm" onClick={() => onFinished(session.sessionId)}>
+            See your feedback
+          </Button>
+        </div>
+      )}
 
       {/* The question the interviewer is asking. In panel mode the speaker
           label names which voice holds the floor. */}
@@ -247,7 +327,7 @@ export function InterviewRoom({ session, onFinished }: InterviewRoomProps) {
           onClick={finish}
         >
           <SquareIcon />
-          End interview
+          {session.status === "complete" ? "Leave" : "End interview"}
         </Button>
       </div>
 

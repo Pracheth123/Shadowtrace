@@ -21,6 +21,10 @@ class TranscriptWriter:
         # utterance_id → full generated text (pre-truncate)
         self._agent_full: dict[str, str] = {}
         self._agent_words: dict[str, list[str]] = {}
+        # Set by the runtime in a multi-round interview; stamped on each line so
+        # evaluation can attribute a turn to the round (and rubric) it was in.
+        self.current_round: str | None = None
+        self.current_speaker_label: str | None = None
 
     def add_candidate(
         self,
@@ -28,16 +32,31 @@ class TranscriptWriter:
         text: str,
         t_start: float,
         t_end: float,
+        *,
+        speech_s: float | None = None,
+        word_count: int | None = None,
     ) -> None:
-        self._entries.append(
-            {
-                "speaker": "candidate",
-                "turn_id": turn_id,
-                "text": text,
-                "t_start": t_start,
-                "t_end": t_end,
-            }
-        )
+        entry = {
+            "speaker": "candidate",
+            "turn_id": turn_id,
+            "text": text,
+            "t_start": t_start,
+            "t_end": t_end,
+        }
+        # Only what was measured: speech duration from STT word timings, when
+        # the provider reported them. Absent otherwise, never estimated here.
+        if speech_s is not None:
+            entry["speech_s"] = round(speech_s, 3)
+        if word_count is not None:
+            entry["word_count"] = word_count
+        self._stamp(entry)
+        self._entries.append(entry)
+
+    def _stamp(self, entry: dict[str, Any]) -> None:
+        if self.current_round:
+            entry["round"] = self.current_round
+        if entry["speaker"] == "agent" and self.current_speaker_label:
+            entry["speaker_label"] = self.current_speaker_label
 
     def begin_agent(
         self,
@@ -49,16 +68,16 @@ class TranscriptWriter:
     ) -> None:
         self._agent_full[utterance_id] = text
         self._agent_words[utterance_id] = word_list or text.split()
-        self._entries.append(
-            {
-                "speaker": "agent",
-                "turn_id": turn_id,
-                "text": text,
-                "t_start": t_start,
-                "t_end": t_start,
-                "utterance_id": utterance_id,
-            }
-        )
+        entry = {
+            "speaker": "agent",
+            "turn_id": turn_id,
+            "text": text,
+            "t_start": t_start,
+            "t_end": t_start,
+            "utterance_id": utterance_id,
+        }
+        self._stamp(entry)
+        self._entries.append(entry)
         self._open_agent[utterance_id] = len(self._entries) - 1
 
     def end_agent(self, utterance_id: str, t_end: float) -> None:

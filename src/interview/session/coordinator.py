@@ -167,6 +167,15 @@ class Coordinator:
         return tuple(self._plans)
 
     @property
+    def index(self) -> int:
+        """Position of the active round, 0-based."""
+        return self._index
+
+    @property
+    def all_progress(self) -> tuple[RoundProgress, ...]:
+        return tuple(self._progress)
+
+    @property
     def current(self) -> RoundPlan:
         return self._plans[self._index]
 

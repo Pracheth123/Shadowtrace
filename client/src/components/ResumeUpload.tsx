@@ -6,13 +6,15 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { toastManager } from "@/components/ui/toast";
+import { UPLOAD_ACCEPT, UPLOAD_LABEL, UPLOAD_MAX_MB } from "@/lib/api";
 import { useFileUpload } from "@/lib/use-file-upload";
 import { cn } from "@/lib/utils";
 
-const MAX_SIZE_MB = 5;
+// Same list and limit the server enforces (intake/documents.py). The server
+// also checks the content, so a renamed file is still rejected there.
+const MAX_SIZE_MB = UPLOAD_MAX_MB;
 const MAX_SIZE = MAX_SIZE_MB * 1024 * 1024;
-const ACCEPT = ".pdf,.docx";
+const ACCEPT = UPLOAD_ACCEPT;
 
 function formatSize(bytes: number) {
   if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
@@ -21,6 +23,8 @@ function formatSize(bytes: number) {
 
 export type ResumeUploadProps = {
   onFileChange?: (file: File | null) => void;
+  /** What the drop zone is for, e.g. "resume" or "work sample". */
+  noun?: string;
 };
 
 /**
@@ -31,7 +35,7 @@ export type ResumeUploadProps = {
  * shows the filename and size: the thing a candidate actually needs to
  * confirm they picked the right file.
  */
-export function ResumeUpload({ onFileChange }: ResumeUploadProps) {
+export function ResumeUpload({ onFileChange, noun = "resume" }: ResumeUploadProps) {
   const [state, actions] = useFileUpload({
     accept: ACCEPT,
     maxSize: MAX_SIZE,
@@ -59,7 +63,7 @@ export function ResumeUpload({ onFileChange }: ResumeUploadProps) {
           ref={ref}
           onChange={onChange}
           className="sr-only"
-          aria-label="Upload resume file"
+          aria-label={`Upload ${noun} file`}
           {...inputProps}
         />
 
@@ -76,7 +80,7 @@ export function ResumeUpload({ onFileChange }: ResumeUploadProps) {
                 {picked.file.name}
               </p>
               <p className="text-xs text-muted-foreground">
-                {formatSize(picked.file.size)} · ready to analyse
+                {formatSize(picked.file.size)} · read when you continue
               </p>
             </div>
             <Button
@@ -97,9 +101,9 @@ export function ResumeUpload({ onFileChange }: ResumeUploadProps) {
             >
               <FileTextIcon className="size-4 text-muted-foreground" />
             </div>
-            <p className="mb-1 text-sm font-medium">Drop your resume here</p>
+            <p className="mb-1 text-sm font-medium">Drop your {noun} here</p>
             <p className="text-xs text-muted-foreground">
-              PDF or DOCX (max. {MAX_SIZE_MB}MB)
+              {UPLOAD_LABEL} (max. {MAX_SIZE_MB} MB)
             </p>
             <Button
               variant="outline"
@@ -107,7 +111,7 @@ export function ResumeUpload({ onFileChange }: ResumeUploadProps) {
               onClick={actions.openFileDialog}
             >
               <UploadIcon className="opacity-60" />
-              Select resume
+              Select {noun}
             </Button>
           </div>
         )}
@@ -123,21 +127,6 @@ export function ResumeUpload({ onFileChange }: ResumeUploadProps) {
         </div>
       )}
 
-      {picked && state.errors.length === 0 && (
-        <button
-          type="button"
-          onClick={() =>
-            toastManager.add({
-              title: "Resume uploaded successfully",
-              description: picked.file.name,
-              tone: "success",
-            })
-          }
-          className="self-start text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
-        >
-          Confirm this is the right file
-        </button>
-      )}
     </div>
   );
 }

@@ -7,6 +7,7 @@ import {
   type CaptureHandle,
 } from "@/lib/audio-capture";
 import { PlaybackQueue, type ChunkMeta } from "@/lib/audio-playback";
+import { currentToken, ensureGuest } from "@/lib/api";
 
 /**
  * The live session socket, lifted out of the old single-file App.
@@ -39,7 +40,6 @@ import { PlaybackQueue, type ChunkMeta } from "@/lib/audio-playback";
 
 const WS_HOST = import.meta.env.VITE_WS_HOST || `${location.hostname}:8000`;
 const WS_URL = `${location.protocol === "https:" ? "wss://" : "ws://"}${WS_HOST}/ws/session`;
-export const HTTP_BASE = `${location.protocol}//${WS_HOST}`;
 
 /** How long the backend may take to wake before we say so on screen. */
 const WAKING_AFTER_MS = 2500;
@@ -66,12 +66,30 @@ export type Utterance = {
   persona: string | null;
 };
 
+/** A session always starts from a completed intake; the server holds the rest. */
 export type SessionOptions = {
+  intakeId: string;
   lane: Lane;
   intensity: Intensity;
-  panelMode: boolean;
-  packId?: string;
 };
+
+/** Server-reported progress. Core (spine) questions and follow-ups are separate. */
+export type SessionProgress = {
+  mode: "rounds" | "single";
+  round: string | null;
+  round_label: string;
+  round_index: number;
+  round_count: number;
+  core_asked: number;
+  core_total: number;
+  follow_ups: number;
+  answers: number;
+  intensity: string;
+  round_seconds_remaining: number;
+  rounds: { round: string; label: string; state: "done" | "active" | "pending"; core_asked: number; core_total: number }[];
+};
+
+export type RoundNotice = { fromLabel: string; toLabel: string; carried: number; open: number };
 
 export type LogLine = { type: string; detail: string };
 
@@ -89,6 +107,14 @@ export function useSession() {
   const [micActive, setMicActive] = useState(false);
   const [muted, setMuted] = useState(false);
   const [micStream, setMicStream] = useState<MediaStream | null>(null);
+  const [progress, setProgress] = useState<SessionProgress | null>(null);
+  const [roundNotice, setRoundNotice] = useState<RoundNotice | null>(null);
+  const [providerWarning, setProviderWarning] = useState("");
+  // A voice problem the candidate can recover from by switching to text.
+  const [voiceProblem, setVoiceProblem] = useState("");
+  const [sessionId, setSessionId] = useState("");
+  const [intensity, setIntensity] = useState<Intensity>("realistic");
+  const [interviewer, setInterviewer] = useState("");
   const [voiceInfo, setVoiceInfo] = useState<{
     enabled: boolean;
     provider: string;
@@ -219,12 +245,16 @@ export function useSession() {
           setStatus("rejected");
           setStatusDetail(message.reason ?? "");
           setRunning(false);
+          void endCapture();
           return;
         }
 
         if (message.type === "session_ready") {
           resumeTokenRef.current = message.resume_token ?? "";
           triesRef.current = 0;
+          if (message.session_id) setSessionId(String(message.session_id));
+          if (message.intensity) setIntensity(message.intensity);
+          if (message.interviewer) setInterviewer(String(message.interviewer));
           if (message.lane) {
             setLane(message.lane);
             laneRef.current = message.lane;
@@ -253,6 +283,35 @@ export function useSession() {
               );
             }
           }
+          return;
+        }
+
+        if (message.type === "progress") {
+          setProgress(message as SessionProgress);
+          return;
+        }
+
+        if (message.type === "round_transition") {
+          setRoundNotice({
+            fromLabel: String(message.from_label ?? ""),
+            toLabel: String(message.to_label ?? ""),
+            carried: Number(message.carried_statements ?? 0),
+            open: Number(message.carried_open_questions ?? 0),
+          });
+          return;
+        }
+
+        if (message.type === "provider_warning") {
+          setProviderWarning(String(message.detail ?? ""));
+          return;
+        }
+
+        if (message.type === "lane_changed") {
+          setLane(message.lane);
+          laneRef.current = message.lane;
+          setVoiceProblem("");
+          playbackRef.current?.stopAll();
+          void endCapture();
           return;
         }
 
@@ -301,9 +360,10 @@ export function useSession() {
         }
 
         if (message.type === "voice_error") {
+          // Not a dead end: the session is still open and the candidate can
+          // choose to continue by typing. Nothing is substituted silently.
           addLog("voice_error", String(message.detail ?? message.reason ?? ""));
-          setStatusDetail(String(message.detail ?? "Voice is unavailable."));
-          setStatus("unreachable");
+          setVoiceProblem(String(message.detail ?? "Voice is unavailable."));
           return;
         }
 
@@ -337,6 +397,7 @@ export function useSession() {
 
         if (message.type === "session_complete") {
           endedRef.current = true;
+          if (message.session_id) setSessionId(String(message.session_id));
           playbackRef.current?.stopAll();
           void endCapture();
           setStatus("complete");
@@ -378,8 +439,14 @@ export function useSession() {
   );
 
   const start = useCallback(
-    (options: SessionOptions) => {
+    async (options: SessionOptions) => {
       setLogs([]);
+      setProgress(null);
+      setRoundNotice(null);
+      setProviderWarning("");
+      setVoiceProblem("");
+      setSessionId("");
+      setIntensity(options.intensity);
       setUtterance(null);
       setTurnCount(0);
       setStatus("connecting");
@@ -399,16 +466,21 @@ export function useSession() {
         // is indistinguishable from a broken provider.
         void playback().unlock();
       }
+      const authToken = currentToken() || (await ensureGuest());
       attach(new WebSocket(WS_URL), {
         type: "session_start",
+        auth_token: authToken,
+        intake_id: options.intakeId,
         lane: options.lane,
-        intensity: options.intensity,
-        panel_mode: options.panelMode,
-        ...(options.packId ? { pack_id: options.packId } : {}),
       });
     },
     [attach, playback],
   );
+
+  /** The explicit text fallback after a voice problem. */
+  const switchToText = useCallback(() => {
+    send({ type: "switch_to_text", reason: "candidate chose text after a voice problem" });
+  }, [send]);
 
   const end = useCallback(() => {
     endedRef.current = true;
@@ -516,8 +588,16 @@ export function useSession() {
     muted,
     micStream,
     voiceInfo,
+    progress,
+    roundNotice,
+    providerWarning,
+    voiceProblem,
+    sessionId,
+    intensity,
+    interviewer,
     captureSupported: isCaptureSupported(),
     start,
+    switchToText,
     end,
     bargeIn,
     togglePushToTalk,

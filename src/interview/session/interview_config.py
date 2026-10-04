@@ -29,10 +29,10 @@ from interview.session.roles import (
     time_allocation,
 )
 
-# Upload types we actually read. Anything else gets a recovery message naming
-# these, rather than a generic failure.
-SUPPORTED_RESUME_SUFFIXES = (".pdf", ".txt", ".md")
-SUPPORTED_RESUME_LABEL = "PDF, plain text, or Markdown"
+# Upload types we actually read. One list, shared with intake/documents.py and
+# mirrored by the browser, so the two sides cannot disagree about what works.
+SUPPORTED_RESUME_SUFFIXES = (".pdf", ".docx", ".txt", ".md")
+SUPPORTED_RESUME_LABEL = "PDF, DOCX, plain text or Markdown"
 
 MAX_BACKGROUND_CHARS = 20_000
 MAX_JOB_DESCRIPTION_CHARS = 20_000
@@ -53,8 +53,8 @@ def check_resume_upload(filename: str) -> str:
     """
     Accept only types we can actually extract, with a useful message otherwise.
 
-    `.doc`/`.docx` are called out specifically because they are the most likely
-    rejection and "unsupported file" would leave the candidate guessing.
+    The name check is the cheap first gate; `intake.documents.extract_upload`
+    then checks the content agrees with the name.
     """
     name = (filename or "").strip()
     if not name:
@@ -66,11 +66,11 @@ def check_resume_upload(filename: str) -> str:
     for suffix in SUPPORTED_RESUME_SUFFIXES:
         if lowered.endswith(suffix):
             return suffix
-    if lowered.endswith((".doc", ".docx", ".pages", ".odt")):
+    if lowered.endswith((".doc", ".pages", ".odt", ".rtf")):
         raise UnsupportedUpload(
-            f"{name} is a word-processor document, which this build does not read.",
+            f"{name} is a word-processor format this build does not read.",
             recovery=(
-                "Export it as PDF (File → Export or Save as PDF) and upload "
+                "Save it as DOCX or PDF (File → Save as / Export) and upload "
                 "that, or paste your background as text instead."
             ),
         )
@@ -78,8 +78,8 @@ def check_resume_upload(filename: str) -> str:
         raise UnsupportedUpload(
             f"{name} is an image, and this build does not run OCR.",
             recovery=(
-                "Upload a PDF exported from a word processor, or paste your "
-                "background as text."
+                "Upload a PDF exported from a word processor, a DOCX, or paste "
+                "your background as text."
             ),
         )
     raise UnsupportedUpload(
