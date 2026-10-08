@@ -18,11 +18,12 @@ import { cn } from "@/lib/utils";
  * already opened and renders its level. It never starts or stops capture, and
  * it never touches the socket.
  *
- * Colours come from the palette: primary for the waveform, accent for peaks.
+ * Colours come from the palette (canvas needs literal values): Prussian ink
+ * for the waveform, the lighter pen tint for peaks. Keep in step with styles.css.
  */
 
-const WAVE_COLOR = "#3d27ce"; // primary
-const PEAK_COLOR = "#443dff"; // accent
+const WAVE_COLOR = "#233c66"; // --pen-700
+const PEAK_COLOR = "#6f86ab"; // --pen-400
 
 export type WaveformProps = {
   /** The session's microphone stream. Null before capture starts. */

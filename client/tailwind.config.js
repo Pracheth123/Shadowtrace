@@ -37,16 +37,11 @@ export default {
         warning: "rgb(var(--warning) / <alpha-value>)",
       },
       fontFamily: {
-        // System-first typography; the homepage adds a restrained serif accent.
-        display: ["Inter", "ui-sans-serif", "system-ui", "Segoe UI", "sans-serif"],
-        sans: [
-          "Inter",
-          "ui-sans-serif",
-          "system-ui",
-          "Segoe UI",
-          "Helvetica Neue",
-          "sans-serif",
-        ],
+        // Self-hosted in src/assets/fonts (see @font-face in styles.css).
+        // Newsreader: headings and quotes. Schibsted Grotesk: interface text.
+        display: ["Newsreader", "Iowan Old Style", "Georgia", "serif"],
+        serif: ["Newsreader", "Iowan Old Style", "Georgia", "serif"],
+        sans: ["Schibsted Grotesk", "ui-sans-serif", "system-ui", "Segoe UI", "sans-serif"],
         mono: ["ui-monospace", "SFMono-Regular", "Consolas", "monospace"],
       },
       borderRadius: {

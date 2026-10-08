@@ -1,0 +1,210 @@
+/* Homepage motion and interaction styles. One curve and a small set of
+   durations. See docs/RESUME_SCROLL_STORY.md and docs/LANDING_PAGE_MOTION.md. */
+.home-page { --home-ease: cubic-bezier(0.22, 1, 0.36, 1); --home-quick: 200ms; --home-swap: 320ms; }
+
+/* ---------- Hero copy entrance (CSS, so content is visible even if JS animation fails) */
+.hero-line { display: block; }
+.enter { animation: home-enter 700ms var(--home-ease) both; animation-delay: var(--enter-delay, 0ms); }
+@keyframes home-enter { from { opacity: 0; transform: translateY(0.45em); } to { opacity: 1; transform: none; } }
+
+/* ---------- Buttons and arrows: a small, consistent nudge */
+.arrow-cta svg { transition: transform var(--home-quick) var(--home-ease); }
+.arrow-cta:hover svg.lucide-arrow-right, .arrow-cta:focus-visible svg.lucide-arrow-right { transform: translateX(3px); }
+.home-page .arrow-cta { transition: background-color var(--home-quick), color var(--home-quick), box-shadow var(--home-quick), transform var(--home-quick) var(--home-ease); }
+.home-page .arrow-cta:active { transform: translateY(1px) scale(0.99); }
+/* Comfortable hit areas for text-only actions (24px+ target size). */
+.home-nav button { min-height: 32px; }
+.site-footer > button { min-height: 32px; }
+
+/* ==========================================================================
+   Papers to Practice story (ResumeScrollStory.tsx)
+   ========================================================================== */
+.story { position: relative; }
+.story-grid { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr); gap: 64px; align-items: center; padding-block: 40px 56px; }
+.story-copy { position: relative; z-index: 1; }
+.story-copy .eyebrow { margin-bottom: 22px; }
+.story h1 { font-size: clamp(50px, min(5.9vw, 9svh), 84px); font-weight: 450; letter-spacing: -0.02em; line-height: 1; }
+.story .hero-description { margin-top: 20px; }
+.story .hero-actions { flex-wrap: wrap; gap: 14px 24px; margin-top: 24px; }
+.story .hero-detail { margin-top: 0; }
+
+/* Pinned: ~200svh total, the inner viewport sticks for one screen of scroll.
+   No overflow/transform on .story or .story-sticky, or sticky would break;
+   movement is clipped inside .story-clip instead. */
+.story[data-mode=pinned] { height: 200vh; height: 200svh; }
+.story[data-mode=pinned] .story-sticky { position: sticky; top: 0; height: 100vh; height: 100svh; display: flex; align-items: center; }
+.story[data-mode=pinned] .story-grid { width: min(1200px, calc(100% - 96px)); padding-block: 0 24px; }
+
+/* Step captions: a short list; the active step shows its sentence. */
+.story-steps { margin-top: 26px; max-width: 450px; border-top: 1px solid var(--rule); }
+.story-steps li { border-bottom: 1px solid var(--rule-soft); }
+.story-steps button { display: flex; gap: 14px; width: 100%; padding: 9px 0; text-align: left; border-radius: 4px; }
+.story-step-number { padding-top: 2px; font-family: ui-monospace, monospace; font-size: 10px; color: var(--graphite-600); transition: color var(--home-swap); }
+.story-step-text { display: block; }
+.story-step-title { display: block; font-size: 13px; font-weight: 550; color: var(--graphite-600); transition: color var(--home-swap); }
+.story-step-body { display: block; max-height: 0; opacity: 0; overflow: hidden; font-size: 12px; line-height: 1.7; color: var(--graphite-600); transition: max-height var(--home-swap) var(--home-ease), opacity var(--home-swap), margin var(--home-swap); }
+.story-steps li[data-active=true] .story-step-title, .story-steps li[data-active=true] .story-step-number { color: var(--pen-700); }
+.story-steps li[data-active=true] .story-step-number { font-weight: 700; }
+.story-steps li[data-active=true] .story-step-body { max-height: 4.2em; opacity: 1; margin-top: 3px; }
+.story-steps button:hover .story-step-title { color: var(--pen-700); }
+.story-hint { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; margin-top: 14px; font-size: 11px; color: var(--graphite-600); }
+.story-scroll-hint { display: inline-flex; align-items: center; gap: 7px; }
+.story-scroll-hint svg { animation: hint-nudge 1.6s var(--home-ease) 1.4s 2 both; }
+@keyframes hint-nudge { 0%, 100% { transform: none; } 50% { transform: translateY(3px); } }
+.story-skip { min-height: 32px; text-decoration: underline; text-underline-offset: 3px; color: var(--pen-600); }
+.story-skip:hover { color: var(--pen-700); }
+
+/* Stage: container for paper sizes; decoration clipped inside. */
+.story-stage { position: relative; container-type: size; height: min(660px, calc(100svh - 120px)); }
+.story-clip { position: absolute; inset: 0; overflow: hidden; pointer-events: none; border-radius: 18px; background: radial-gradient(120% 90% at 50% 40%, var(--paper-sunk) 0%, var(--paper-sunk) 100%); border: 1px solid var(--rule); }
+.story-chip { position: absolute; z-index: 3; top: 12px; left: 12px; max-width: calc(100% - 24px); padding: 5px 11px; border-radius: 999px; background: var(--paper-raised); border: 1px solid var(--rule); font-size: 10px; line-height: 1.4; color: var(--graphite-700); }
+.story-connector { position: absolute; inset: 0; overflow: visible; }
+.story-connector path { stroke: var(--pen-600); }
+.story-connector circle { fill: var(--pen-600); }
+
+/* Each paper: scroll transform on .paper-flight, load entrance on .paper-enter. */
+.paper-flight { position: absolute; left: 50%; top: 50%; width: calc(var(--pw) * 1cqmin); margin-left: calc(var(--pw) * -0.5cqmin); margin-top: calc(var(--pw) * -0.66cqmin); }
+.paper-enter { animation: paper-in 950ms var(--home-ease) both; animation-delay: calc(var(--enter-i, 0) * 70ms + 200ms); }
+@keyframes paper-in { from { opacity: 0; transform: translate(calc((var(--enter-i, 0) - 2) * 26px), 70px) rotate(calc((var(--enter-i, 0) - 2) * 4deg)) scale(0.94); } to { opacity: 1; transform: none; } }
+
+/* Paper artwork. --u = 1% of the sheet width, so everything scales with it. */
+.paper { --u: 2.2px; position: relative; display: flex; flex-direction: column; gap: calc(var(--u) * 2.8); width: 100%; aspect-ratio: 1 / 1.32; overflow: hidden; padding: calc(var(--u) * 9) calc(var(--u) * 8.5); background: var(--paper-raised); border: 1px solid var(--rule); border-radius: 3px; box-shadow: 0 1px 2px color-mix(in srgb, var(--pen-900) 8%, transparent), 0 16px 28px -18px color-mix(in srgb, var(--pen-900) 38%, transparent); }
+.paper-flight .paper { --u: calc(var(--pw) * 0.01cqmin); }
+.paper-fold { position: absolute; top: -1px; right: -1px; width: calc(var(--u) * 10); height: calc(var(--u) * 10); background: linear-gradient(225deg, var(--paper-sunk) 50%, var(--paper-raised) 50%); box-shadow: -1px 1px 2px color-mix(in srgb, var(--pen-900) 12%, transparent); border-bottom-left-radius: 2px; }
+.paper-head { display: flex; align-items: center; gap: calc(var(--u) * 4); margin-bottom: calc(var(--u) * 2); }
+.paper-avatar { width: calc(var(--u) * 13); height: calc(var(--u) * 13); flex-shrink: 0; border-radius: 50%; background: var(--paper-deep); }
+.paper-head .paper-lines { flex: 1; }
+.paper-lines { display: flex; flex-direction: column; gap: calc(var(--u) * 2.4); }
+.paper-lines i { display: block; height: calc(var(--u) * 1.7); border-radius: 2px; background: var(--paper-deep); }
+.paper-heading { display: block; margin-top: calc(var(--u) * 1.5); font-size: calc(var(--u) * 4); font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: var(--graphite-600); }
+.paper-statement { position: relative; isolation: isolate; display: block; width: fit-content; max-width: 100%; font-family: var(--font-serif); font-size: calc(var(--u) * 5.4); line-height: 1.32; color: var(--ink); }
+.paper-highlight { position: absolute; z-index: -1; inset: calc(var(--u) * -0.8) calc(var(--u) * -1.6); border-radius: calc(var(--u) * 1); background: var(--mark-200); transform-origin: left center; }
+.paper-block { display: block; height: calc(var(--u) * 22); border-radius: 3px; background: var(--paper-sunk); }
+.paper-block-small { height: calc(var(--u) * 12); }
+.paper-chips { display: flex; flex-wrap: wrap; gap: calc(var(--u) * 2.4); }
+.paper-chips i { display: block; height: calc(var(--u) * 7); border-radius: 999px; background: var(--paper-sunk); border: 1px solid var(--rule); }
+.paper-entry { display: flex; gap: calc(var(--u) * 4); }
+.paper-entry b { width: calc(var(--u) * 4); height: calc(var(--u) * 4); flex-shrink: 0; margin-top: 2px; border-radius: 50%; background: var(--pen-200); }
+.paper-entry .paper-lines { flex: 1; }
+.paper-code { display: flex; flex-direction: column; gap: calc(var(--u) * 2.6); padding: calc(var(--u) * 5); border-radius: 3px; background: var(--paper-sunk); }
+.paper-code i { display: block; height: calc(var(--u) * 1.8); border-radius: 2px; background: var(--rule-strong); }
+
+/* Cards: an interactive layer above the papers. Anchored by their top-left. */
+.story-card-wrap { position: absolute; z-index: 2; left: 50%; top: 50%; width: 55cqw; transform-origin: 50% 0; }
+.story-card { border-radius: 12px; padding: 14px 16px 15px; box-shadow: 0 22px 44px -26px color-mix(in srgb, var(--pen-900) 55%, transparent), 0 2px 6px -3px color-mix(in srgb, var(--pen-900) 20%, transparent); }
+.story-card-kicker { display: flex; align-items: center; gap: 6px; font-size: 9px; font-weight: 650; letter-spacing: 1.3px; text-transform: uppercase; }
+.story-interview { background: var(--pen-800); color: var(--pen-50); }
+.story-interview .story-card-kicker { color: var(--pen-200); }
+.story-tabs { display: grid; grid-template-columns: 0.7fr 1.25fr 1fr; gap: 5px; margin-top: 11px; }
+.story-tabs button { height: 30px; padding: 0 6px; border-radius: 6px; border: 1px solid #ffffff2e; font-size: 11px; color: var(--pen-100); white-space: nowrap; transition: background-color var(--home-quick), color var(--home-quick), border-color var(--home-quick); }
+.story-tabs button:hover { border-color: #ffffff66; color: var(--paper-raised); }
+.story-tabs button[aria-selected=true] { background: var(--mark-200); border-color: var(--mark-200); color: var(--pen-800); font-weight: 650; }
+.story-interview :focus-visible { --tw-ring-offset-color: var(--pen-800); }
+.story-panel { margin-top: 12px; }
+.story-label { margin-top: 9px; font-size: 9px; letter-spacing: 1.2px; text-transform: uppercase; color: var(--pen-200); }
+.story-label:first-child { margin-top: 0; }
+.story-source { margin-top: 3px; font-family: var(--font-serif); font-size: 12.5px; color: var(--pen-100); }
+.story-question { margin-top: 3px; font-size: 13.5px; line-height: 1.55; color: var(--paper-raised); }
+.story-answer { margin-top: 3px; font-size: 12.5px; line-height: 1.6; color: var(--pen-100); }
+.story-answer mark { color: var(--paper-raised); background: color-mix(in srgb, var(--mark-200) 26%, transparent); border-bottom: 1px solid var(--mark-400); border-radius: 2px; padding: 0 1px; }
+.story-feedback { background: var(--paper-raised); border: 1px solid var(--rule); color: var(--ink); }
+.story-feedback .story-card-kicker { color: var(--graphite-700); }
+.story-quote { margin-top: 10px; padding: 6px 10px; border-left: 2px solid var(--mark-400); background: var(--mark-100); font-family: var(--font-serif); font-size: 15px; line-height: 1.45; }
+.story-coaching { margin-top: 10px; font-size: 12.5px; line-height: 1.65; color: var(--graphite-700); }
+.story-coaching strong { font-weight: 650; color: var(--pen-700); }
+.story-next { display: flex; align-items: center; gap: 6px; margin-top: 8px; font-size: 11px; font-weight: 600; color: var(--pen-600); }
+
+/* Compact (phones, tablets, short desktops): unpinned, smaller stage, full-width cards. */
+.story[data-mode=compact] .story-stage { width: min(100%, 480px); height: auto; aspect-ratio: 4 / 5; max-height: 600px; justify-self: center; }
+.story[data-mode=compact] .story-card-wrap { width: 100cqw; }
+.story[data-mode=compact] .story-card { padding: 13px 14px; }
+/* The resume and connector already show the statement on a small stage. */
+.story[data-mode=compact] .story-panel > .story-label:first-child, .story[data-mode=compact] .story-source { display: none; }
+.story[data-mode=compact] .story-panel > .story-label:nth-child(3) { margin-top: 0; }
+
+/* Static (reduced motion): four readable panels, no flight, rotation or pinning. */
+.story[data-mode=static] .story-grid { grid-template-columns: minmax(0, 1fr); padding-bottom: 24px; }
+.story[data-mode=static] .story-copy { max-width: 640px; }
+.story-static { position: relative; padding: 0 0 64px; }
+.story-static .story-chip { position: static; display: inline-block; margin-bottom: 16px; }
+.story-static-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.story-static-panel { display: flex; flex-direction: column; padding: 22px; border-radius: 14px; border: 1px solid var(--rule); background: var(--paper-sunk); }
+.story-static-title { margin-top: 6px; font-size: 19px; font-weight: 550; letter-spacing: -.4px; }
+.story-static-text { margin-top: 5px; font-size: 12.5px; line-height: 1.7; color: var(--graphite-700); }
+.story-static-art { display: flex; justify-content: center; align-items: flex-start; margin-top: 18px; }
+.story-static-art > .story-card { width: 100%; }
+.static-papers { display: flex; justify-content: center; padding-left: 70px; }
+.static-papers .paper { --u: 1.45px; width: 145px; margin-left: -70px; }
+.static-resume .paper { --u: 2.4px; width: 240px; }
+
+/* ---------- How it works: a plain list (the story above carries the visuals) */
+.process-list article { display: flex; align-items: flex-start; gap: 22px; padding: 24px 0; border-top: 1px solid var(--rule); }
+.process-list article:first-child { padding-top: 0; border-top: 0; }
+.process-list article:last-child { padding-bottom: 0; }
+.process-list h3 { font-size: 15px; font-weight: 550; letter-spacing: -.3px; }
+.process-list p { font-size: 12px; line-height: 1.85; color: var(--graphite-600); margin-top: 8px; }
+.process-list svg { width: 18px; min-width: 18px; height: 18px; color: var(--graphite-500); margin-left: auto; }
+
+/* ---------- Practice note → example comparison */
+.note-visual { flex-direction: column; gap: 22px; padding-bottom: 64px; }
+.note-toggle { display: inline-flex; align-items: center; gap: 7px; height: 34px; padding: 0 14px; border-radius: 999px; border: 1px dashed var(--pen-400); background: var(--paper-raised); color: var(--pen-600); font-size: 11px; font-weight: 600; transition: background-color var(--home-quick), border-color var(--home-quick); }
+.note-toggle:hover { background: var(--paper-raised); border-color: var(--pen-400); }
+.note-compare { width: min(100%, 380px); background: var(--paper-raised); border: 1px solid var(--rule); border-radius: 10px; padding: 18px; box-shadow: 0 18px 24px -17px color-mix(in srgb, var(--pen-900) 40%, transparent); }
+.compare-label { font-size: 9px; letter-spacing: 1.3px; text-transform: uppercase; color: var(--graphite-600); margin-bottom: 12px; }
+.compare-row { padding: 11px 13px; border-radius: 7px; margin-bottom: 8px; }
+.compare-row span { display: block; font-size: 9px; letter-spacing: 1.2px; text-transform: uppercase; margin-bottom: 4px; }
+.compare-row p { font-size: 12px; line-height: 1.65; }
+.compare-before { background: var(--red-100); color: var(--red-600); }
+.compare-before p { color: var(--graphite-700); }
+.compare-after { background: var(--pen-50); color: var(--pen-600); }
+.compare-coach { display: flex; gap: 9px; align-items: flex-start; padding-top: 6px; font-size: 11px; line-height: 1.7; color: var(--graphite-700); }
+.compare-coach svg { color: var(--pen-600); margin-top: 3px; flex-shrink: 0; }
+
+/* ---------- FAQ: native <details>, animated where ::details-content exists */
+.faq-list details { interpolate-size: allow-keywords; }
+.faq-list details::details-content { height: 0; overflow: clip; transition: height 320ms var(--home-ease), content-visibility 320ms allow-discrete; }
+.faq-list details[open]::details-content { height: auto; }
+.faq-list details[open] > p { animation: faq-in 320ms var(--home-ease) both; }
+@keyframes faq-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+.faq-list summary svg { transition: transform 260ms var(--home-ease); flex-shrink: 0; }
+.faq-list summary { transition: color var(--home-quick); }
+.faq-list summary:hover { color: var(--pen-700); }
+
+/* ---------- One-time section reveals (Reveal.tsx) */
+.reveal[data-reveal=pending] { opacity: 0; transform: translateY(22px); }
+.reveal[data-reveal=shown] { opacity: 1; transform: none; transition: opacity 600ms var(--home-ease), transform 600ms var(--home-ease); transition-delay: var(--reveal-delay, 0s); }
+@media print { .reveal[data-reveal] { opacity: 1 !important; transform: none !important; } }
+
+/* ---------- Responsive */
+@media (max-width: 1023px) {
+  .story-grid { grid-template-columns: minmax(0, 1fr); gap: 32px; padding-block: 44px 52px; }
+  .story-steps { max-width: none; }
+  .story-static-list { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 1050px) { .story[data-mode=pinned] .story-grid { width: calc(100% - 56px); gap: 40px; } }
+@media (max-width: 760px) {
+  .story[data-mode=compact] .story-stage { aspect-ratio: 2 / 3; }
+  .story h1 { font-size: 64px; letter-spacing: -1.4px; }
+  .story-grid { padding-block: 36px 44px; }
+  .story .hero-description { font-size: 14px; }
+  .story-copy .eyebrow { font-size: 9px; letter-spacing: 1.25px; }
+  .story-static-panel { padding: 18px 16px; }
+  .process-list article { gap: 16px; }
+}
+@media (max-width: 380px) {
+  .story h1 { font-size: 54px; letter-spacing: -1.1px; }
+  .story-tabs button { font-size: 10px; padding: 0 3px; }
+  .story-card-kicker { letter-spacing: .8px; }
+  .static-papers .paper { --u: 1.2px; width: 120px; margin-left: -60px; }
+  .static-resume .paper { --u: 2.1px; width: 210px; }
+}
+
+/* ---------- Reduced motion. The story switches to its static mode in JS;
+   these remove any remaining movement so nothing jumps for a frame. */
+@media (prefers-reduced-motion: reduce) {
+  .enter, .paper-enter, .story-scroll-hint svg, .faq-list details[open] > p { animation: none; }
+  .arrow-cta:hover svg.lucide-arrow-right { transform: none; }
+  .faq-list details::details-content { transition: none; }
+  .reveal[data-reveal=pending] { transform: none; }
+  .story-step-body { transition: none; }
+}
