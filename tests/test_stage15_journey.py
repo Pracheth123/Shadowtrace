@@ -82,6 +82,11 @@ def srv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         server, "INTAKE_LIMITER", RateLimiter(RateLimit(max_events=50, window_s=3600.0))
     )
+    # Every TestClient shares one address; a fresh guest limit per test.
+    monkeypatch.setattr(
+        server, "GUEST_LIMITER", RateLimiter(RateLimit(max_events=50, window_s=3600.0))
+    )
+    monkeypatch.setattr(server, "_LIVE", {})
     monkeypatch.setattr(server, "RECONNECT", ReconnectRegistry(ttl_s=60.0))
     monkeypatch.setattr(server, "_PARKED", {})
     monkeypatch.setenv("MOCK_LLM", "1")
@@ -139,6 +144,8 @@ def run_intake(client, headers, *, files=None, **fields) -> dict:
         "round": "domain_specialist",
         "lane": "text",
         "intensity": "realistic",
+        # Stage 16: affirmative consent is required before anything is read.
+        "consent": "1",
         **fields,
     }
     response = client.post("/api/intake", data=data, files=files or {}, headers=auth(headers))
@@ -484,21 +491,21 @@ def test_h_uploads_are_validated_by_content_and_docx_is_read(srv) -> None:
         headers = guest(client)
         image = client.post(
             "/api/intake",
-            data={"target_role": "x", "role_family": "software"},
+            data={"target_role": "x", "role_family": "software", "consent": "1"},
             files={"resume": ("scan.png", b"\x89PNG....", "image/png")},
             headers=auth(headers),
         )
         assert image.status_code == 422 and "OCR" in image.json()["error"]
         fake_pdf = client.post(
             "/api/intake",
-            data={"target_role": "x", "role_family": "software"},
+            data={"target_role": "x", "role_family": "software", "consent": "1"},
             files={"resume": ("cv.pdf", b"not really a pdf at all", "application/pdf")},
             headers=auth(headers),
         )
         assert fake_pdf.status_code == 422 and fake_pdf.json()["recovery"]
         too_big = client.post(
             "/api/intake",
-            data={"target_role": "x", "role_family": "software"},
+            data={"target_role": "x", "role_family": "software", "consent": "1"},
             files={"resume": ("cv.txt", b"a" * (5 * 1024 * 1024 + 10), "text/plain")},
             headers=auth(headers),
         )
@@ -510,7 +517,7 @@ def test_h_uploads_are_validated_by_content_and_docx_is_read(srv) -> None:
         assert docx["sources"]["resume"]["kind"] == "docx"
         assert docx["claims"], "DOCX text produced no claims"
         no_context = client.post(
-            "/api/intake", data={"target_role": "x"}, headers=auth(headers)
+            "/api/intake", data={"target_role": "x", "consent": "1"}, headers=auth(headers)
         )
         assert no_context.status_code == 422
         assert "background" in no_context.json()["error"]
@@ -639,6 +646,10 @@ def test_h_production_refuses_unprepared_and_unvoiced_sessions(srv, monkeypatch)
 
     monkeypatch.setenv("APP_ENV", "prod")
     monkeypatch.setenv("ALLOW_MOCK_PROVIDERS", "0")
+    # Stage 16: prod refuses MOCK_LLM, and refuses to run with no interviewer
+    # at all. A placeholder key is never used: both sessions are refused first.
+    monkeypatch.setenv("MOCK_LLM", "0")
+    monkeypatch.setenv("GROQ_API_KEY", "placeholder-never-sent")
     reset_settings_cache()
     try:
         with TestClient(srv.app) as client:
@@ -755,7 +766,7 @@ def _valid(quote: str = "I qualify on budget and timing", claim_status: str = "h
     })
 
 
-async def _round(evaluator):
+async def _round(evaluator, **kwargs):
     return await evaluate_round(
         evaluator,
         perspective="domain_specialist",
@@ -766,12 +777,14 @@ async def _round(evaluator):
         family_label="Sales",
         target_role="AE",
         seniority="mid",
+        **kwargs,
     )
 
 
 async def test_malformed_output_is_retried_then_accepted() -> None:
+    # Stage 16: repairs are an explicit budget (EVAL_MAX_REPAIRS, default 1).
     evaluator = ScriptedEvaluator(["not json", '{"dimensions": []}', _valid()])
-    result = await _round(evaluator)
+    result = await _round(evaluator, max_repairs=2)
     assert evaluator.calls == 3
     assert result.round_result.attempts == 3
     assert all(d.assessed for d in result.round_result.dimensions)

@@ -32,6 +32,7 @@ from interview.session.guard import (
     is_near_duplicate,
     probes_fit,
 )
+from interview.session.router import is_skip_request
 from interview.session.tools import SessionTools
 
 if TYPE_CHECKING:
@@ -75,19 +76,21 @@ def phrase_probe(
     return f'You said "{anchor}". What did you do next, and why that choice?'
 
 
-def propose(tools: SessionTools) -> Intent:
+def propose(tools: SessionTools, *, skip_requested: bool = False) -> Intent:
     """
     Deterministic proposal from tool state.
 
     Spine stays in pack order. After a spine is on the board, one in-scope
     probe is proposed when time and depth allow, then the agent returns to
-    the next spine. This is a proposal — the guard may still reject it.
+    the next spine. A candidate's request to skip rules out the probe for this
+    turn. This is a proposal — the guard may still reject it.
     """
     state = tools.guard_state()
     cap = depth_cap(state.pack, state.intensity)
     claim = tools.untested_claim()
     can_probe = (
-        bool(state.covered)
+        not skip_requested
+        and bool(state.covered)
         and state.depth_on_current < 1
         and state.depth_on_current < cap
         and probes_fit(state)
@@ -216,7 +219,9 @@ class LiveAgent:
                 if move.decision_summary:
                     await think(move.decision_summary)
             else:
-                intent = propose(self._tools)
+                intent = propose(
+                    self._tools, skip_requested=is_skip_request(self._last_answer)
+                )
             decision = evaluate(intent, self._tools.guard_state())
             if not decision.accepted:
                 await self._emit_override(turn_id, step, decision)
@@ -293,12 +298,19 @@ class LiveAgent:
             handoff=dict(self.handoff_context or {}),
             # Rotates the role's phrasing so successive follow-ups differ.
             probe_index=len(tools.asked),
+            # Stage 16: the per-turn model-call budget is keyed by turn id, and
+            # the candidate's chosen focus steers probing (never the guard).
+            turn_id=turn_id,
+            objective=dict(self.objective or {}),
+            skip_requested=is_skip_request(self._last_answer),
         )
         return await self._proposer.propose(context)
 
     # Set by the coordinator before a round begins; read-only context from
     # earlier rounds. Statements and open questions only, never ratings.
     handoff_context: dict | None = None
+    # Stage 16: the candidate's selected practice objective, read-only.
+    objective: dict | None = None
 
     async def commit_outcome(self, turn_id: str, decision: Decision) -> None:
         """Apply a prepared decision once the floor is granted."""

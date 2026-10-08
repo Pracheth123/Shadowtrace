@@ -1,5 +1,47 @@
 # Tasks
 
+## 2026-10-06 — Stage 16: reviewable feedback, targeted practice, honest latency — DONE (browser unverified)
+
+Baseline verified in a clean Python 3.12 venv before any change: 258 passed,
+1 skipped once `python-multipart` was installed (it was imported by the intake
+endpoint but never declared, so a clean install failed 25 tests). The checked-in
+`.venv` is broken: a CPython 3.14 `pydantic_core` wheel was installed into a 3.12
+environment. `tests/test_stage2.py` has a pre-existing wall-clock flake
+(~1 in 3 runs).
+
+Already present before this stage (not re-built): React client, FastAPI, Groq
+interviewer/evaluator, Deepgram STT/TTS, sequential HR → manager → specialist
+rounds, quote checks against candidate turns, reports, history, downloads,
+guest isolation, concurrent round evaluation.
+
+Checklist:
+
+- [x] Install: declare `python-multipart`; test extras; lock file; Windows steps.
+- [x] Settings: one source (env > .env > defaults); YAML no longer overrides
+      `GROQ_*`/`MAX_MODEL_CALLS_PER_TURN`; `MOCK_LLM` validated; mocks refused in prod.
+- [x] Groq client: SDK retries off, one retry layer, per-request timeout, overall
+      deadline, single fallback hop, real model/attempt/token metadata.
+- [x] Diagnostics: configured vs authenticated-request-succeeded, no secrets.
+- [x] Evaluation jobs per round: queued/running/complete/failed/not_assessed,
+      partial results, retry failed rounds only, cache, restart honesty, timings.
+- [x] Report v3: plain claim labels, source_match ≠ validity, question+answer
+      evidence, limitation, top-3 priorities; legacy reports adapted on read.
+- [x] Disputes + revised assessment (labelled); excluded from progress claims.
+- [x] Targeted practice: server-derived context, practice pack through the live
+      runtime, coached/unaided, before/after comparison with explicit outcomes.
+- [x] Intake source review (edit/exclude, provenance kept) + practice objective.
+- [x] Consent, retention cleanup, deletion that cancels background work.
+- [x] Room: keyboard controls, visible transcript, mic error recovery, practice timing.
+- [x] Tests for all of the above; client typecheck/build; clean install check.
+- [x] Evaluation set (~24) + human review sheet (unfilled).
+- [x] Live provider checks + feedback latency benchmark (opt-in, billable).
+- [x] Docs: README, .env.example, architecture, limitations, API/schema,
+      migration, provenance template, judging map, licence inventory.
+- [ ] Real-browser checks (mic, interruption, typing recovery, downloads, dispute,
+      practice, reload, delete) — connected Chrome could not reach localhost.
+
+Evidence: docs/decisions/stage16_upgrade.md.
+
 ## 2026-10-04 — Stage 15: the candidate journey, connected — DONE (browser voice unverified)
 
 Verified: full suite green (see below); `tests/test_stage15_journey.py` drives

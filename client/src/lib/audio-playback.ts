@@ -41,6 +41,8 @@ export type PlaybackProgress = {
 export type PlaybackConfig = {
   onProgress: (progress: PlaybackProgress) => void;
   onError?: (message: string) => void;
+  /** The interviewer's line has finished playing: synthesis done and queue drained. */
+  onDrained?: (utteranceId: string) => void;
 };
 
 /** Small lead so the first buffer is not scheduled in the past. */
@@ -67,6 +69,9 @@ export class PlaybackQueue {
   private scheduledMs = 0;
   private ticker: number | null = null;
   private closed = false;
+  /** The server said synthesis of the current utterance is complete. */
+  private synthesisDone = false;
+  private drainedFired = false;
 
   constructor(private readonly config: PlaybackConfig) {}
 
@@ -93,6 +98,8 @@ export class PlaybackQueue {
   beginUtterance(utteranceId: string): void {
     if (this.utteranceId && this.utteranceId !== utteranceId) this.stopAll();
     this.utteranceId = utteranceId;
+    this.synthesisDone = false;
+    this.drainedFired = false;
     this.scheduledMs = 0;
     this.startedAt = null;
     this.nextStartAt = 0;
@@ -143,7 +150,10 @@ export class PlaybackQueue {
       // Do NOT stop reporting here. Synthesis finishing is not playback
       // finishing, and the final acknowledgement has to reflect the audio
       // clock rather than the last chunk's arrival.
-      if (this.sources.size === 0) this.report();
+      if (this.sources.size === 0) {
+        this.report();
+        if (this.synthesisDone) this.drained();
+      }
     };
   }
 
@@ -206,10 +216,17 @@ export class PlaybackQueue {
   endUtterance(): void {
     // Synthesis is done; playback may not be. Keep the ticker running until the
     // queue actually drains so the last acknowledgement is truthful.
-    if (this.sources.size === 0) {
-      this.report();
-      this.stopTicker();
-    }
+    this.synthesisDone = true;
+    if (this.sources.size === 0) this.drained();
+  }
+
+  /** Last acknowledgement, stop reporting, and tell the caller once. */
+  private drained(): void {
+    if (this.drainedFired) return;
+    this.drainedFired = true;
+    this.report();
+    this.stopTicker();
+    this.config.onDrained?.(this.utteranceId);
   }
 
   async close(): Promise<void> {

@@ -122,16 +122,29 @@ class ProposalContext:
     # Bounded context from earlier rounds. Statements and open questions only.
     handoff: dict[str, Any] = field(default_factory=dict)
     probe_index: int = 0
+    # Stage 16. Keys the per-turn model-call budget.
+    turn_id: str | None = None
+    # Stage 16. The candidate's selected focus: {"competency": id, "note": text}.
+    # It reorders what a role chooses to probe; it never relaxes the guard's
+    # spine order, time budget or depth cap, so ordinary coverage is kept.
+    objective: dict[str, Any] = field(default_factory=dict)
+    # The candidate asked to move past the current question: no follow-up on
+    # it this turn. The guard's spine order and time rules are unchanged.
+    skip_requested: bool = False
 
     def role_evidence(self) -> list[EvidenceItem]:
-        """Evidence this role is scoped to probe."""
+        """Evidence this role is scoped to probe, objective-matching first."""
         allowed = set(self.spec.competencies)
         kinds = set(self.spec.evidence_kinds)
-        return [
+        items = [
             item
             for item in self.evidence
             if item.competency in allowed and item.kind in kinds
         ]
+        focus = str(self.objective.get("competency") or "")
+        if focus:
+            items.sort(key=lambda item: 0 if item.competency == focus else 1)
+        return items
 
     def effective_depth_cap(self) -> int:
         """
@@ -275,7 +288,8 @@ class DeterministicProposer:
         state = context.state
         cap = context.effective_depth_cap()
         can_probe = (
-            bool(state.covered)
+            not context.skip_requested
+            and bool(state.covered)
             and state.depth_on_current < cap
             and probes_fit(state)
         )
@@ -285,6 +299,7 @@ class DeterministicProposer:
             if move is not None:
                 return move
 
+        skipped = "candidate asked to skip; " if context.skip_requested else ""
         if state.outstanding:
             spine_id = state.outstanding[0]
             item = state.pack.spine_item(spine_id)
@@ -294,7 +309,7 @@ class DeterministicProposer:
                 question=item.text,
                 target_competency=item.competency,
                 decision_summary=(
-                    f"{self.spec.label}: next spine question for "
+                    f"{self.spec.label}: {skipped}next spine question for "
                     f"{item.competency}; {len(state.outstanding)} remaining."
                 ),
             )
@@ -413,14 +428,20 @@ class ModelProposer:
         role: str = "live_interviewer",
         fallback: DeterministicProposer | None = None,
         max_tokens: int = 800,
+        deadline_s: float | None = None,
     ) -> None:
         self.spec = spec
         self._client = client
         self._role = role
         self._fallback = fallback or DeterministicProposer(spec)
         self._max_tokens = max_tokens
+        # Overall budget for one decision (LIVE_MODEL_DEADLINE_S): retries and
+        # the fallback model must fit inside it, or the plan asks instead.
+        self._deadline_s = deadline_s
         self.fallbacks_used = 0
         self.calls_made = 0
+        # Why the last fallback happened, for the session's degraded-turn audit.
+        self.last_fallback_reason = ""
 
     def build_messages(self, context: ProposalContext) -> list[dict[str, str]]:
         state = context.state
@@ -434,6 +455,17 @@ class ModelProposer:
         covered = ", ".join(state.covered) or "(none)"
         asked = "\n".join(f"- {q}" for q in state.asked_questions[-8:]) or "- (none)"
         handoff = json.dumps(context.handoff, ensure_ascii=False) if context.handoff else "{}"
+        objective = (
+            json.dumps(
+                {
+                    "competency": context.objective.get("competency", ""),
+                    "note": str(context.objective.get("note", ""))[:200],
+                },
+                ensure_ascii=False,
+            )
+            if context.objective
+            else "(none)"
+        )
 
         system = (
             f"{self.spec.instructions}\n"
@@ -467,6 +499,8 @@ class ModelProposer:
             f"Evidence in scope:\n" + "\n".join(evidence_lines) + "\n"
             f"Questions already asked (do not repeat):\n{asked}\n"
             f"Context from earlier rounds: {handoff}\n"
+            "Candidate's chosen practice focus (prefer follow-ups on this when "
+            f"it fits your round; still ask every outstanding spine question): {objective}\n"
             f"The candidate's most recent answer:\n{context.last_answer}\n"
             "<<<END DATA>>>"
         )
@@ -476,26 +510,38 @@ class ModelProposer:
         ]
 
     async def propose(self, context: ProposalContext) -> ProposedMove:
+        if context.skip_requested:
+            # Nothing for a model to decide: the next move is the next spine
+            # question (or the end of the round). Not a fallback, so not counted.
+            return await self._fallback.propose(context)
         try:
             self.calls_made += 1
-            reply = await self._client.chat(
-                self._role,
-                self.build_messages(context),
-                max_tokens=self._max_tokens,
-                temperature=0.4,
+            kwargs: dict[str, Any] = {
+                "max_tokens": self._max_tokens,
+                "temperature": 0.4,
                 # Server-side JSON mode; the parser still validates the shape.
-                json_object=True,
+                "json_object": True,
+            }
+            if context.turn_id is not None:
+                kwargs["turn_id"] = context.turn_id
+            if self._deadline_s is not None:
+                kwargs["deadline_s"] = self._deadline_s
+            reply = await self._client.chat(
+                self._role, self.build_messages(context), **kwargs
             )
             return self.parse(reply.get("content", ""), context)
         except ProposalRejected as exc:
             log.warning("%s proposal rejected (%s); using deterministic move",
                         self.spec.label, exc)
             self.fallbacks_used += 1
+            self.last_fallback_reason = f"invalid proposal: {str(exc)[:120]}"
             return await self._fallback.propose(context)
         except Exception as exc:  # noqa: BLE001 — surfaced by the caller's state
             log.warning("%s model call failed (%s); using deterministic move",
                         self.spec.label, exc)
             self.fallbacks_used += 1
+            category = getattr(exc, "category", exc.__class__.__name__)
+            self.last_fallback_reason = f"model call failed: {category}"
             return await self._fallback.propose(context)
 
     def parse(self, content: str, context: ProposalContext) -> ProposedMove:

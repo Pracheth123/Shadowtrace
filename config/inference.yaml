@@ -1,46 +1,21 @@
-# Inference configuration.
-# Secrets never live here — GROQ_API_KEY comes from .env / the environment.
+# Inference configuration — generation defaults and the TTS vendor only.
+#
+# Stage 16: everything that also exists as an environment setting was removed
+# from this file. It used to carry `requests_per_minute`, `max_retries_on_429`,
+# `max_calls_per_turn`, role models and failover models, and the Groq client
+# read those *instead of* GROQ_REQUESTS_PER_MINUTE / GROQ_MAX_RETRIES /
+# MAX_MODEL_CALLS_PER_TURN / MODEL_* — so changing .env silently did nothing.
+#
+# The single source for those is now src/interview/config.py (process
+# environment > .env > defaults). Secrets never live here.
 
-# ── Groq (all model calls) ───────────────────────────────────────────────────
-# OpenAI Python SDK with base_url https://api.groq.com/openai/v1
-# Role models chosen by TTFT tier + tool-calling support (not brand names).
-# See docs/decisions/inference.md — re-run tools/bench_ttft.py against Groq to
-# replace these provisional picks with measured numbers.
-groq:
-  base_url: "https://api.groq.com/openai/v1"
-  requests_per_minute: 30       # client-side shared limiter (one key for all roles)
-  max_retries_on_429: 5
-  max_calls_per_turn: 3         # hard cap on model calls per live turn
-  roles:
-    # Fast speak path — lowest TTFT among tool-capable Groq chat models
-    live_interviewer: openai/gpt-oss-20b
-    # Indexer agent — same fast tool-capable model; step limit keeps cost down
-    indexer: openai/gpt-oss-20b
-    # Evaluators — stronger tool-capable model for quote verification
-    evaluator: openai/gpt-oss-120b
-    # Roadmap agent — same quality tier as evaluators
-    roadmap: openai/gpt-oss-120b
-
-  # Stage 11 provider failover. On a hard (non-429) failure the client retries
-  # the role once on its fallback model, then — if allowed — degrades to the
-  # local mock so the session keeps going instead of dropping the candidate.
-  # Every step is logged as a `fallback_used` event.
-  # gemma2-9b-it was decommissioned by Groq and returns 400
-  # model_decommissioned. It was still here, so the first real failover of the
-  # live interviewer failed with a hard error instead of recovering.
-  failover_roles:
-    live_interviewer: qwen/qwen3.8-27b
-    indexer: qwen/qwen3.8-27b
-    evaluator: qwen/qwen3.8-27b
-    roadmap: qwen/qwen3.8-27b
-  failover_to_mock: true
-
-# Shared generation defaults (overridable per call)
-provider: groq                  # groq | mock
+# Shared generation defaults for the freeform interviewer path (overridable per
+# call). Structured calls set their own budgets.
+provider: groq                  # groq | mock (freeform stage-4 interviewer only)
 max_tokens: 120
 temperature: 0.7
 
-# ── TTS (unchanged stage-3 path; not Groq) ───────────────────────────────────
+# ── TTS (unchanged stage-3 path; Deepgram is configured in .env) ─────────────
 tts:
   vendor: mock                  # mock until a TTS vendor is re-benchmarked
   model: tts-1

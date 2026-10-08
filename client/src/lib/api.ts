@@ -141,6 +141,17 @@ export type PrepItem = {
   evidence: Evidence[];
 };
 
+export type SourceSpan = {
+  found: boolean;
+  start: number | null;
+  end: number | null;
+  before: string;
+  match: string;
+  after: string;
+};
+
+export type ReviewAction = "keep" | "edit" | "exclude";
+
 export type IntakeClaim = {
   id: string;
   text: string;
@@ -148,7 +159,12 @@ export type IntakeClaim = {
   source: string;
   source_path: string;
   evidence_kind: string;
+  quote?: string;
+  source_span?: SourceSpan;
+  review?: { action: ReviewAction; text?: string };
 };
+
+export type Objective = { competency: string; label?: string; note?: string };
 
 export type IntakeStatus = {
   state: string;
@@ -169,6 +185,13 @@ export type IntakeResult = {
   sources?: Record<string, any>;
   coverage_note?: string;
   evidence_note?: string;
+  review?: {
+    statements: Record<string, { action: ReviewAction; text?: string }>;
+    objective: Objective | null;
+    reviewed: boolean;
+  };
+  objectives?: Record<string, string>;
+  consent?: Record<string, unknown> | null;
 };
 
 export type Citation = { turn_id: string; quote: string; verified: boolean };
@@ -198,6 +221,14 @@ export type ReportFinding = {
   t_start: number | null;
   confidence: "high" | "moderate" | "low";
   practice: string;
+  // report.v3 (absent on older reports)
+  finding_id?: string;
+  source_match?: boolean;
+  question?: string;
+  question_turn_id?: string;
+  limitation?: string;
+  priority?: number;
+  eligible_for_practice?: boolean;
 };
 
 export type RoundResult = {
@@ -207,7 +238,7 @@ export type RoundResult = {
   perspective_label: string;
   pack_id: string;
   rubric_version: string;
-  status: "evaluated" | "not_reached" | "no_answers";
+  status: "evaluated" | "not_reached" | "no_answers" | "insufficient_evidence";
   coverage: Record<string, any>;
   candidate_turns: number;
   dimensions: DimensionResult[];
@@ -221,6 +252,7 @@ export type RoundResult = {
   };
   findings: ReportFinding[];
   rejected_evidence: number;
+  evaluation_meta?: Record<string, any>;
 };
 
 export type ClaimPosition = {
@@ -243,6 +275,7 @@ export type ClaimFinding = {
   quote: string;
   turn_id: string;
   positions: ClaimPosition[];
+  status_label?: string;
 };
 
 export type Recommendation = {
@@ -282,8 +315,120 @@ export type SessionReport = {
   };
   recommendations: Recommendation[];
   limitations: string[];
-  evaluator: { provider: string; model: string; is_assessment: boolean };
+  evaluator: { provider: string; model: string; is_assessment: boolean; fallback_model?: string | null };
   candidate_turns: number;
+  // report.v3
+  claim_status_labels?: Record<string, string>;
+  priority_findings?: string[];
+  session_kind?: "interview" | "practice";
+  practice?: Record<string, any> | null;
+  // Served alongside the stored report, never merged into it.
+  disputes?: Record<string, Dispute>;
+  revisions?: Revision[];
+  contested?: { findings: string[]; dimensions: [string, string][] };
+};
+
+export type Dispute = {
+  finding_id: string;
+  round: string;
+  dimension_id: string;
+  dimension_label: string;
+  status: "open" | "reassessed" | "withdrawn" | "accepted_revision";
+  explanation: string;
+  created_at: string;
+  revisions: string[];
+};
+
+export type Revision = {
+  revision_id: string;
+  finding_id: string;
+  round: string;
+  dimension_id: string;
+  label: string;
+  note: string;
+  state: "queued" | "running" | "complete" | "failed";
+  error?: string;
+  recovery?: string;
+  dimension_before?: string;
+  dimension_after?: string;
+  summary?: string;
+  round_result?: RoundResult;
+};
+
+export type RoundJob = {
+  round: string;
+  label: string;
+  state: "queued" | "running" | "complete" | "failed" | "not_assessed";
+  category?: string | null;
+  error?: string | null;
+  recovery?: string | null;
+  elapsed_s?: number;
+  queue_delay_s?: number;
+  runs?: number;
+  model_used?: string | null;
+  fallback_used?: boolean;
+  cache_hit?: boolean;
+  result?: RoundResult;
+};
+
+export type EvaluationJob = {
+  session_id: string;
+  state: string;
+  transcript_available: boolean;
+  report_ready: boolean;
+  rounds: RoundJob[];
+  rounds_total: number;
+  rounds_settled: number;
+  elapsed_s: number | null;
+  error?: string | null;
+  recovery?: string | null;
+  evaluator?: { provider: string; model: string } | null;
+};
+
+export type ChecklistItem = { kind: string; text: string; source: string };
+
+export type PracticeComparison = {
+  session_id: string;
+  outcome: "clearer" | "no_clear_improvement" | "insufficient_evidence" | "unavailable" | "pending";
+  outcome_label: string;
+  reason: string;
+  coached: boolean;
+  mode: string;
+  lane: string;
+  before: { level?: string; quote?: string; question?: string; citations?: Citation[] } | null;
+  after: {
+    level?: string;
+    assessed?: boolean;
+    citations?: Citation[];
+    findings?: { polarity: string; explanation: string; quote: string }[];
+  } | null;
+  limitations: string[];
+};
+
+export type Practice = {
+  practice_id: string;
+  created_at: string;
+  mode: "coached" | "unaided";
+  parent_practice_id: string | null;
+  coached: boolean;
+  minutes: number;
+  parent: { session_id: string; intake_id: string; finding_id: string };
+  round: string;
+  round_label: string;
+  rubric_version: string;
+  dimension_id: string;
+  dimension_label: string;
+  source_question: string;
+  source_quote: string;
+  finding_explanation: string;
+  role: Record<string, string>;
+  before: { level?: string; quote?: string; question?: string };
+  checklist: ChecklistItem[];
+  attempts: { session_id: string; started_at: string; lane: string; coached: boolean }[];
+  comparisons: PracticeComparison[];
+  latest_outcome: string | null;
+  offer_unaided_variation: boolean;
+  checklist_visible: boolean;
 };
 
 export type SessionMeta = {
@@ -298,6 +443,16 @@ export type SessionMeta = {
   recovery?: string | null;
   evaluation_attempts?: number;
   personalised?: boolean;
+  kind?: "interview" | "practice";
+  practice?: {
+    practice_id: string;
+    parent_session_id: string;
+    dimension_label: string;
+    mode: string;
+    coached: boolean;
+  } | null;
+  interviewer?: string;
+  degraded_turns?: { turn_id: string; round: string | null; reason: string }[];
 };
 
 export type HistoryRow = {
@@ -313,6 +468,8 @@ export type HistoryRow = {
   ended_reason: string;
   overall_score: number | null;
   evaluator_provider: string | null;
+  kind?: "interview" | "practice";
+  open_disputes?: number;
 };
 
 export type Comparison = {
@@ -332,10 +489,22 @@ export type History = {
   sessions: HistoryRow[];
   comparisons: Comparison[];
   recurring_gaps: { dimension_label: string; round: string; sessions: string[] }[];
+  practice?: Practice[];
+};
+
+export type PlanPractice = {
+  practice_id: string;
+  title: string;
+  mode: string;
+  attempts: number;
+  latest_outcome: string | null;
+  offer_unaided_variation: boolean;
+  parent_session_id: string;
 };
 
 export type Plan = {
   items: Recommendation[];
+  practice?: PlanPractice[];
   preparation: Recommendation[];
   based_on_sessions: number;
   note: string;
@@ -367,6 +536,34 @@ export const ROUNDS: { label: string; value: RoundChoice; hint: string }[] = [
 
 export function percent(score: number | null | undefined): string {
   return score == null ? "—" : `${Math.round(score * 100)}`;
+}
+
+/** Display labels for stored claim statuses; older reports carry only the raw value. */
+export const CLAIM_LABEL: Record<string, string> = {
+  held: "Explained in this session",
+  collapsed: "Needs clarification",
+  untested: "Not explored",
+};
+
+export function claimLabel(status: string): string {
+  return CLAIM_LABEL[status] ?? status;
+}
+
+export const OUTCOME_LABEL: Record<string, string> = {
+  clearer: "Clearer explanation of the selected gap",
+  no_clear_improvement: "No clear improvement",
+  insufficient_evidence: "Insufficient evidence to compare",
+  unavailable: "Comparison unavailable",
+  pending: "Still being evaluated",
+};
+
+/** A JSON request body. Every call still goes through `api()` with the bearer token. */
+export function jsonBody(body: unknown, method = "POST"): RequestInit {
+  return {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  };
 }
 
 export function levelLabel(level: string): string {

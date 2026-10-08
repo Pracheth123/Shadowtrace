@@ -124,6 +124,7 @@ class VoiceSession:
             get_turn_id=self._get_turn_id,
             url_override=stt_url_override,
             on_speech_started=self._on_speech_started,
+            on_lost=self._on_stt_lost,
         )
         self.tts = DeepgramTts(
             bus,
@@ -137,6 +138,7 @@ class VoiceSession:
         self._converter: PcmStreamConverter | None = None
         self._queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=AUDIO_QUEUE_FRAMES)
         self._pump_task: asyncio.Task | None = None
+        self._recover_task: asyncio.Task | None = None
         self._closed = False
         self._muted = False
         self._seq = 0
@@ -200,6 +202,11 @@ class VoiceSession:
         if self._closed:
             return
         self._closed = True
+        if self._recover_task and not self._recover_task.done():
+            self._recover_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._recover_task
+        self._recover_task = None
         if self._pump_task and not self._pump_task.done():
             self._pump_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -290,6 +297,59 @@ class VoiceSession:
     async def finalise_turn(self, boundary: str = "client") -> None:
         """End the current answer from our side (push-to-talk release, timeout)."""
         await self.stt.finalise_turn(boundary)
+
+    # Waits before each reconnect attempt. Short first: most drops are a
+    # momentary network blip, and every second here is speech not transcribed.
+    RECONNECT_BACKOFF_S: tuple[float, ...] = (0.25, 1.0, 3.0)
+
+    async def _on_stt_lost(self, reason: str) -> None:
+        """
+        Transcription stopped mid-session: reconnect in the background.
+
+        Runs off the STT receive/send path, so neither is blocked while the
+        new socket is opened. Without this the room kept listening while
+        nothing was transcribed, so the interviewer waited on a question it
+        would never hear answered.
+        """
+        self.stats.errors.append(f"stt lost: {reason}")
+        if self._closed:
+            return
+        if self._recover_task is None or self._recover_task.done():
+            self._recover_task = asyncio.create_task(self._recover_stt())
+
+    async def _recover_stt(self) -> None:
+        for wait in self.RECONNECT_BACKOFF_S:
+            await asyncio.sleep(wait)
+            if self._closed:
+                return
+            try:
+                await self.stt.reconnect()
+            except Exception as exc:  # noqa: BLE001 — retried, then surfaced
+                log.warning("STT reconnect failed: %s", exc)
+                continue
+            await self._send_text(
+                {
+                    "type": "voice_warning",
+                    "reason": "transcription_reconnected",
+                    "detail": (
+                        "Speech recognition briefly dropped and has reconnected. "
+                        "If your last few words are missing, please repeat them."
+                    ),
+                }
+            )
+            return
+        # Every attempt failed: say so, and offer the text lane.
+        await self._send_text(
+            {
+                "type": "voice_error",
+                "reason": "transcription_lost",
+                "detail": (
+                    "Speech recognition stopped, so your answers are not being "
+                    "heard. You can continue by typing."
+                ),
+                "can_use_text_lane": True,
+            }
+        )
 
     async def _on_speech_started(self) -> None:
         """Provider detected speech. Surface it so the UI can show listening."""

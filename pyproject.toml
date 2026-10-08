@@ -4,14 +4,19 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "interview"
-version = "0.2.0"
-requires-python = ">=3.11"
+version = "0.4.0"
+# 3.11–3.13 are what the suite is run on. A venv must be created and filled by
+# the same interpreter: a 3.14 wheel installed into a 3.12 venv is what broke the
+# previous checked-in `.venv` (`No module named pydantic_core._pydantic_core`).
+requires-python = ">=3.11,<3.14"
 dependencies = [
     "pydantic>=2.0",
-    "pytest>=7.0",
-    "pytest-asyncio>=0.23",
     # Stage 2 — transport
     "fastapi>=0.111",          # WebSocket session server (stage 4 onwards, pulled in now for transport)
+    # Stage 16: POST /api/intake takes multipart uploads (resume, work sample).
+    # FastAPI needs this to parse Form/File fields; it was imported at runtime
+    # but never declared, so a clean install failed every intake request.
+    "python-multipart>=0.0.9",
     "uvicorn[standard]>=0.29", # ASGI server for FastAPI
     "aiofiles>=23.0",          # async file I/O for cached clip; never block the event loop
     "pyyaml>=6.0",             # parse config/transport.yaml; thresholds must not live in code
@@ -35,6 +40,13 @@ dependencies = [
     # Stage 12: maintained PDF text extraction, replacing the hand-rolled
     # routine that silently returned empty text for ordinary PDFs.
     "pypdf>=4.2",
+]
+
+[project.optional-dependencies]
+# Test-only. `pip install -e .[test]`; production installs do not need them.
+test = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.23",
 ]
 
 [tool.setuptools.packages.find]

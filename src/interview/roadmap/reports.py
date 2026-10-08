@@ -13,6 +13,12 @@ comparison instead.
 
 Writes are idempotent per session: a retried evaluation replaces that session's
 rows, so it cannot count twice.
+
+Stage 16 migration (applied automatically on open, idempotent): adds
+`session_reports.session_kind` ('interview' | 'practice', default 'interview')
+and `report_gaps.finding_id`. Practice attempts are stored so they can be
+deleted with everything else, but `sessions()` returns interviews only unless
+asked, so a short targeted practice never appears on an interview trend.
 """
 
 from __future__ import annotations
@@ -63,6 +69,12 @@ CREATE TABLE IF NOT EXISTS report_gaps (
 
 TABLES = ("round_dimension_scores", "report_gaps", "session_reports")
 
+# (table, column, DDL) added after the table first shipped.
+MIGRATIONS = (
+    ("session_reports", "session_kind", "TEXT NOT NULL DEFAULT 'interview'"),
+    ("report_gaps", "finding_id", "TEXT NOT NULL DEFAULT ''"),
+)
+
 
 def compat_key(report: dict) -> tuple[str, str]:
     """(rubric_signature, compat_key) for a stage-15 report dict."""
@@ -89,6 +101,14 @@ class ReportStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.executescript(SCHEMA)
+            self._migrate(conn)
+
+    @staticmethod
+    def _migrate(conn: sqlite3.Connection) -> None:
+        for table, column, ddl in MIGRATIONS:
+            existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+            if column not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path)
@@ -113,8 +133,8 @@ class ReportStore:
                 INSERT INTO session_reports (session_id, candidate_id, intake_id,
                     created_at, target_role, role_family, round_selection, lane,
                     intensity, seniority, rubric_signature, evaluator_provider,
-                    compat_key, overall_score, ended_reason)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    compat_key, overall_score, ended_reason, session_kind)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session_id,
@@ -132,6 +152,7 @@ class ReportStore:
                     key,
                     (report.get("overall") or {}).get("score"),
                     str(report.get("ended_reason") or ""),
+                    str(report.get("session_kind") or "interview"),
                 ),
             )
             conn.executemany(
@@ -157,8 +178,8 @@ class ReportStore:
             conn.executemany(
                 """
                 INSERT INTO report_gaps (session_id, gap_index, round, dimension_id,
-                    dimension_label, explanation, quote, turn_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    dimension_label, explanation, quote, turn_id, finding_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
@@ -170,18 +191,21 @@ class ReportStore:
                         gap["explanation"],
                         gap["quote"],
                         gap["turn_id"],
+                        str(gap.get("finding_id") or ""),
                     )
                     for index, gap in enumerate(gaps)
                 ],
             )
 
-    def sessions(self, candidate_id: str) -> list[dict]:
+    def sessions(self, candidate_id: str, *, kind: str | None = "interview") -> list[dict]:
+        """Evaluated sessions, oldest first. `kind=None` returns every kind."""
+        query = "SELECT * FROM session_reports WHERE candidate_id = ?"
+        params: list = [candidate_id]
+        if kind is not None:
+            query += " AND session_kind = ?"
+            params.append(kind)
         with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT * FROM session_reports WHERE candidate_id = ? "
-                "ORDER BY created_at, session_id",
-                (candidate_id,),
-            ).fetchall()
+            rows = conn.execute(query + " ORDER BY created_at, session_id", params).fetchall()
         return [dict(row) for row in rows]
 
     def dimensions(self, session_ids: list[str]) -> list[dict]:

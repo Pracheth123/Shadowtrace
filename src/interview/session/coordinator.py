@@ -124,9 +124,15 @@ class Coordinator:
         if coordinator.should_advance(): coordinator.advance()
     """
 
-    def __init__(self, config: InterviewConfig) -> None:
+    def __init__(
+        self, config: InterviewConfig, *, pack_overrides: dict | None = None
+    ) -> None:
         self.config = config
-        self._plans = self._build_plans(config)
+        # Stage 16: a practice session supplies its own short pack for a round
+        # (keyed by round value). Its rubric is copied from the round's normal
+        # pack, which is recorded as `rubric_pack_id` for evaluation.
+        self._overrides = {str(k): v for k, v in (pack_overrides or {}).items()}
+        self._plans = self._build_plans(config, self._overrides)
         self._index = 0
         self._progress = [RoundProgress(plan=plan) for plan in self._plans]
         self._handoffs: list[HandoffBrief] = []
@@ -139,13 +145,14 @@ class Coordinator:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _build_plans(config: InterviewConfig) -> list[RoundPlan]:
+    def _build_plans(config: InterviewConfig, overrides: dict | None = None) -> list[RoundPlan]:
         budget = config.time_budget()
         plans: list[RoundPlan] = []
         for round_ in config.selected_rounds():
             pack_id = config.pack_ids()[round_]
+            override = (overrides or {}).get(round_.value)
             try:
-                pack = load_pack(pack_id)
+                pack = override if override is not None else load_pack(pack_id)
             except PackLoadError as exc:
                 raise PackUnavailable(
                     f"The {round_.value.replace('_', ' ')} round needs pack "
@@ -351,6 +358,9 @@ class Coordinator:
                 "round": progress.plan.round.value,
                 "label": progress.plan.label,
                 "pack_id": progress.plan.pack.pack_id,
+                # The on-disk pack whose rubric this round is evaluated against.
+                # Differs from pack_id only for a practice round.
+                "rubric_pack_id": self.config.pack_ids()[progress.plan.round],
                 "rubric_version": (
                     progress.plan.pack.rubric.version
                     if progress.plan.pack.rubric

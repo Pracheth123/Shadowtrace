@@ -25,6 +25,19 @@ Candidate journey (stage 15):
     GET  /api/history  ·  GET /api/plan   → history, comparisons, next practice
     POST /api/me/delete                   → erase everything for this candidate
 
+Stage 16 additions (all authenticated, all built from the candidate's own id):
+
+    PUT  /api/intake/{id}/review          → keep / edit / exclude statements, focus
+    GET  /api/sessions/{id}/evaluation    → per-round job state + partial results
+    POST /api/sessions/{id}/evaluation/retry   (failed rounds only)
+    POST /api/sessions/{id}/findings/{fid}/dispute
+    POST /api/sessions/{id}/findings/{fid}/dispute/status
+    POST /api/sessions/{id}/findings/{fid}/revision
+    GET|POST /api/practice ·  GET /api/practice/{pid}
+    POST /api/practice/{pid}/coaching
+    WS   session_start{auth_token, practice_id}  → a targeted practice attempt
+    GET  /api/diagnostics  ·  POST /api/diagnostics/verify   (no secrets)
+
 Every /api route resolves the candidate from the bearer token and builds paths
 from that id (see candidates.py), so changing an id in a URL reaches nothing.
 
@@ -48,7 +61,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 import uuid
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -83,16 +98,48 @@ from interview.intake.documents import (
     UploadRejected,
     extract_upload,
 )
-from interview.llm.env import groq_api_key, load_dotenv
+from interview.llm.env import load_dotenv
 from interview.mocks.fake_stt import FakeStt
-from interview.services.evaluation import build_services, set_state
+from interview.services import diagnostics as diag
+from interview.services.evaluation import build_services, set_state, EvaluationService
+from interview.roadmap.reports import ReportStore
+from interview.services.feedback import (
+    FeedbackError,
+    FeedbackService,
+    create_dispute,
+    overlay,
+    set_dispute_status,
+)
 from interview.services.history import (
     comparisons,
     practice_plan,
     recurring_gaps,
     session_rows,
 )
-from interview.services.intake import IntakeInputs, load_intake, run_intake_job, write_status
+from interview.services.intake import (
+    IntakeInputs,
+    ReviewRejected,
+    accepted_claims,
+    load_intake,
+    objective_for,
+    read_consent,
+    run_intake_job,
+    save_review,
+    write_consent,
+    write_status,
+)
+from interview.services.practice import (
+    PRACTICE_MINUTES,
+    PracticeError,
+    create_practice,
+    list_practices,
+    load_practice,
+    mark_coaching_shown,
+    note_attempt,
+    practice_pack,
+    practice_view,
+)
+from interview.services.retention import sweep as retention_sweep
 from interview.session.coordinator import Coordinator, PackUnavailable
 from interview.session.interview_config import InterviewConfig
 from interview.session.runtime import LiveSession, SessionConfig
@@ -100,9 +147,23 @@ from interview.session.speak import FakeSpeakPort, TextLaneSpeakPort
 from interview.session.tools import Claim
 from interview.transport.voice_session import VoiceSession, VoiceUnavailable
 
-STAGE = 15
+STAGE = 16
 
-app = FastAPI(title=f"Shadowtrace — Stage {STAGE}")
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    # Pay the openai SDK import (seconds on a cold start) at boot, not inside
+    # the first interview turn's model deadline.
+    import openai  # noqa: F401
+
+    await _start_retention()
+    try:
+        yield
+    finally:
+        await _stop_retention()
+
+
+app = FastAPI(title=f"Shadowtrace — Stage {STAGE}", lifespan=_lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -111,6 +172,7 @@ app.add_middleware(
 )
 
 load_dotenv()
+_SETTINGS = get_settings()
 LOG_DIR = Path(os.environ.get("SESSION_LOG_DIR", "logs"))
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -130,30 +192,38 @@ PANEL_VOICES = {
     "bar_raiser": "aura-2-orpheus-en",
 }
 
-SESSION_CAP = SessionCap(limit=int(os.environ.get("MAX_LIVE_SESSIONS", "8")))
-INTAKE_LIMITER = RateLimiter(
-    RateLimit(max_events=int(os.environ.get("INTAKE_RPH", "10")), window_s=3600.0)
-)
+# Limits come from the validated settings (env > .env > defaults).
+SESSION_CAP = SessionCap(limit=_SETTINGS.max_live_sessions)
+INTAKE_LIMITER = RateLimiter(RateLimit(max_events=_SETTINGS.intake_rph, window_s=3600.0))
 GUEST_LIMITER = RateLimiter(RateLimit(max_events=20, window_s=3600.0))
-RECONNECT = ReconnectRegistry(ttl_s=float(os.environ.get("RESUME_TTL_S", "180")))
-_PARK_TTL_S = float(os.environ.get("RESUME_TTL_S", "180"))
+RECONNECT = ReconnectRegistry(ttl_s=_SETTINGS.resume_ttl_s)
+_PARK_TTL_S = _SETTINGS.resume_ttl_s
 _PARKED: dict[str, asyncio.Task] = {}
 _INTAKE_TASKS: dict[str, asyncio.Task] = {}
+_INTAKE_OWNERS: dict[str, str] = {}
+# Live sessions by id, so deletion can close a candidate's open interview first.
+_LIVE: dict[str, "SessionContext"] = {}
+DIAGNOSTICS_LIMITER = RateLimiter(RateLimit(max_events=6, window_s=3600.0))
 
 
 def _use_mock_llm() -> bool:
-    """Mock unless GROQ_API_KEY is set and MOCK_LLM is not forced on."""
-    forced = os.environ.get("MOCK_LLM", "").strip().lower()
-    if forced in ("1", "true", "yes"):
-        return True
-    if forced in ("0", "false", "no"):
-        return False
-    return not bool(groq_api_key())
+    """
+    True when the interviewer and evaluator must not call a model.
+
+    One rule, from settings: MOCK_LLM forces it (only where mocks are allowed);
+    otherwise it follows whether GROQ_API_KEY is configured.
+    """
+    return get_settings().interviewer_mode != "groq"
 
 
 # Data services. Rebound by `configure_data_dir` (tests point it at tmp_path).
 # Built in services/ so this module never imports evaluation directly: the
 # composition root only queues a job after the live session has closed.
+REGISTRY: CandidateRegistry
+REPORT_STORE: ReportStore
+EVALUATION: EvaluationService
+
+
 def configure_data_dir(root: Path) -> None:
     global REGISTRY, REPORT_STORE, EVALUATION
     REGISTRY, REPORT_STORE, EVALUATION = build_services(
@@ -161,7 +231,12 @@ def configure_data_dir(root: Path) -> None:
     )
 
 
-configure_data_dir(Path(os.environ.get("DATA_DIR", "data")))
+configure_data_dir(Path(_SETTINGS.data_dir))
+
+
+def _feedback() -> FeedbackService:
+    # Built on demand so tests that swap EVALUATION get the matching service.
+    return FeedbackService(EVALUATION)
 
 
 def _panel_allowed() -> bool:
@@ -191,20 +266,43 @@ async def health():
         "live_sessions": SESSION_CAP.live,
         "session_limit": SESSION_CAP.limit,
         "providers": {
-            "interviewer": "deterministic" if _use_mock_llm() else "groq",
+            # Configured modes. Whether a key actually works is only known after
+            # POST /api/diagnostics/verify — see `verified`.
+            "interviewer": settings.interviewer_mode,
             "voice": "deepgram" if settings.has_deepgram else "unavailable",
-            "evaluator": (
-                "groq" if (settings.has_groq and not _use_mock_llm()) else "mock"
-                if settings.allow_mock_providers and not settings.is_production
-                else "unavailable"
-            ),
+            "evaluator": settings.evaluator_mode,
+            "verified": {
+                "groq": (diag.last_verification() or {}).get("groq", {}).get("verified"),
+                "deepgram": (diag.last_verification() or {}).get("deepgram", {}).get("verified"),
+            },
         },
         "uploads": {
             "suffixes": list(SUPPORTED_UPLOAD_SUFFIXES),
             "label": SUPPORTED_UPLOAD_LABEL,
             "max_bytes": MAX_UPLOAD_BYTES,
         },
+        "retention_days": settings.guest_retention_days,
+        "practice_minutes": list(PRACTICE_MINUTES),
     }
+
+
+@app.get("/api/diagnostics")
+async def diagnostics():
+    """Effective configuration and readiness. Never contains a secret."""
+    return diag.readiness(get_settings())
+
+
+@app.post("/api/diagnostics/verify")
+async def diagnostics_verify(request: Request):
+    """
+    Authenticated, non-generating provider checks (Groq GET /models, Deepgram
+    GET /v1/projects). Cached for 10 minutes and rate-limited per address.
+    """
+    client = request.client.host if request.client else "unknown"
+    cached = diag.last_verification()
+    if cached is not None and not DIAGNOSTICS_LIMITER.allow(client):
+        return cached
+    return await diag.verify(get_settings())
 
 
 @app.get("/")
@@ -259,6 +357,10 @@ async def _read_upload(upload: UploadFile | None):
     return extract_upload(upload.filename or "", data)
 
 
+def round_up(value: float) -> int:
+    return int(value) + 1
+
+
 @app.post("/api/intake", status_code=202)
 async def create_intake(
     authorization: str | None = Header(default=None),
@@ -273,6 +375,7 @@ async def create_intake(
     company_context: str = Form(""),
     repo_url: str = Form(""),
     total_minutes: float = Form(30.0),
+    consent: str = Form(""),
     resume: UploadFile | None = File(default=None),
     work_sample: UploadFile | None = File(default=None),
 ):
@@ -280,6 +383,14 @@ async def create_intake(
         candidate_id = _candidate(authorization)
     except UnknownCandidate:
         return _error(401, "Not signed in.")
+    # Nothing is read, stored or sent anywhere before an affirmative consent.
+    if consent.strip().lower() not in ("1", "true", "yes", "on"):
+        return _error(
+            422,
+            "Please confirm you understand how your documents and speech are processed.",
+            field="consent",
+            recovery="Tick the consent box on the setup form, then submit again.",
+        )
     if not INTAKE_LIMITER.allow(candidate_id):
         retry = round_up(INTAKE_LIMITER.retry_after_s(candidate_id))
         return JSONResponse(
@@ -319,17 +430,16 @@ async def create_intake(
     directory = REGISTRY.intake_dir(candidate_id, intake_id)
     directory.mkdir(parents=True, exist_ok=False)
     write_json(directory / "config.json", config.model_dump(mode="json"))
+    write_consent(directory, voice=config.lane == "voice")
     write_status(directory, "queued", intake_id=intake_id, warnings=[])
     _INTAKE_TASKS[intake_id] = asyncio.create_task(
         run_intake_job(
             directory, IntakeInputs(config=config, resume=resume_doc, work_sample=sample_doc)
         )
     )
+    _INTAKE_OWNERS[intake_id] = candidate_id
     return {"intake_id": intake_id, "status": read_json(directory / "status.json", {})}
 
-
-def round_up(value: float) -> int:
-    return int(value) + 1
 
 
 def _first_error(exc: ValueError) -> str:
@@ -354,6 +464,36 @@ async def get_intake(intake_id: str, authorization: str | None = Header(default=
         return _error(401, "Not signed in.")
     except NotFound:
         return _error(404, "No such intake.")
+    return load_intake(directory)
+
+
+@app.put("/api/intake/{intake_id}/review")
+async def review_intake(
+    intake_id: str, request: Request, authorization: str | None = Header(default=None)
+):
+    """
+    Keep, edit or exclude each extracted statement, and choose a practice focus.
+    The original statements and their source spans are kept unchanged; edits
+    are stored as the candidate's corrections.
+    """
+    try:
+        candidate_id = _candidate(authorization)
+        directory = REGISTRY.existing_intake(candidate_id, intake_id)
+    except UnknownCandidate:
+        return _error(401, "Not signed in.")
+    except NotFound:
+        return _error(404, "No such intake.")
+    status = read_json(directory / "status.json", {}) or {}
+    if status.get("state") != "ready":
+        return _error(409, "Preparation is not finished yet.")
+    try:
+        payload = await request.json()
+    except Exception:  # noqa: BLE001
+        return _error(422, "Send a JSON body.")
+    try:
+        save_review(directory, payload if isinstance(payload, dict) else {})
+    except ReviewRejected as exc:
+        return _error(422, str(exc))
     return load_intake(directory)
 
 
@@ -391,8 +531,25 @@ async def get_session(session_id: str, authorization: str | None = Header(defaul
             "session_id", "state", "state_history", "created_at", "lane", "intensity",
             "config", "intake_id", "personalised", "ended_reason", "rounds", "error",
             "recovery", "evaluation_attempts", "overall_score", "evaluator",
+            "kind", "practice", "interviewer", "degraded_turns", "objective",
         )
     }
+
+
+@app.get("/api/sessions/{session_id}/evaluation")
+async def get_evaluation(session_id: str, authorization: str | None = Header(default=None)):
+    """
+    Round-by-round evaluation state with every completed round's result, so
+    feedback can be read while other rounds are still running. Read-only:
+    polling this never starts or repeats provider work.
+    """
+    try:
+        candidate_id, _ = _session_dir(authorization, session_id)
+    except UnknownCandidate:
+        return _error(401, "Not signed in.")
+    except NotFound:
+        return _error(404, "No such session.")
+    return EVALUATION.job_view(candidate_id, session_id)
 
 
 @app.get("/api/sessions/{session_id}/report")
@@ -409,7 +566,9 @@ async def get_report(session_id: str, authorization: str | None = Header(default
     report = read_json(directory / "evaluation" / "report.json", None)
     if report is None:
         return _error(404, "The report file is missing.")
-    return report
+    # The stored report is returned unchanged, with disputes and revised
+    # assessments alongside it (never merged into it).
+    return overlay(report, directory)
 
 
 @app.get("/api/sessions/{session_id}/scorecard")
@@ -458,15 +617,205 @@ async def get_transcript(session_id: str, authorization: str | None = Header(def
 
 
 @app.post("/api/sessions/{session_id}/evaluation/retry")
-async def retry_evaluation(session_id: str, authorization: str | None = Header(default=None)):
+async def retry_evaluation(
+    session_id: str, request: Request, authorization: str | None = Header(default=None)
+):
+    """Re-run failed rounds only. Completed rounds are kept and not re-billed."""
     try:
         candidate_id, _ = _session_dir(authorization, session_id)
     except UnknownCandidate:
         return _error(401, "Not signed in.")
     except NotFound:
         return _error(404, "No such session.")
-    meta = EVALUATION.retry(candidate_id, session_id)
+    rounds = None
+    try:
+        body = await request.json()
+        if isinstance(body, dict) and isinstance(body.get("rounds"), list):
+            rounds = [str(r) for r in body["rounds"]]
+    except Exception:  # noqa: BLE001 — an empty body means "all failed rounds"
+        pass
+    meta = EVALUATION.retry(candidate_id, session_id, rounds)
+    if meta.get("retry_refused"):
+        return _error(409, meta["retry_refused"], state=meta.get("state"))
     return {"state": meta.get("state")}
+
+
+def _report_for(authorization: str | None, session_id: str):
+    candidate_id, directory = _session_dir(authorization, session_id)
+    meta = read_json(directory / "meta.json", {}) or {}
+    report = read_json(directory / "evaluation" / "report.json", None)
+    if meta.get("state") != "complete" or report is None:
+        raise FeedbackError("The report is not ready.", status=409)
+    return candidate_id, directory, report
+
+
+@app.post("/api/sessions/{session_id}/findings/{finding_id}/dispute")
+async def dispute_finding(
+    session_id: str,
+    finding_id: str,
+    request: Request,
+    authorization: str | None = Header(default=None),
+):
+    """'This feedback seems wrong'. Stored beside the report, never in it."""
+    try:
+        _, directory, report = _report_for(authorization, session_id)
+    except UnknownCandidate:
+        return _error(401, "Not signed in.")
+    except NotFound:
+        return _error(404, "No such session.")
+    except FeedbackError as exc:
+        return _error(exc.status, str(exc))
+    explanation = ""
+    try:
+        body = await request.json()
+        if isinstance(body, dict):
+            explanation = str(body.get("explanation") or "")
+    except Exception:  # noqa: BLE001 — the explanation is optional
+        pass
+    try:
+        record = create_dispute(directory, report, finding_id, explanation)
+    except FeedbackError as exc:
+        return _error(exc.status, str(exc))
+    return {"dispute": record, "report": overlay(report, directory)}
+
+
+@app.post("/api/sessions/{session_id}/findings/{finding_id}/dispute/status")
+async def dispute_status(
+    session_id: str,
+    finding_id: str,
+    request: Request,
+    authorization: str | None = Header(default=None),
+):
+    try:
+        _, directory, report = _report_for(authorization, session_id)
+    except UnknownCandidate:
+        return _error(401, "Not signed in.")
+    except NotFound:
+        return _error(404, "No such session.")
+    except FeedbackError as exc:
+        return _error(exc.status, str(exc))
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    try:
+        record = set_dispute_status(directory, finding_id, str((body or {}).get("status") or ""))
+    except FeedbackError as exc:
+        return _error(exc.status, str(exc))
+    return {"dispute": record, "report": overlay(report, directory)}
+
+
+@app.post("/api/sessions/{session_id}/findings/{finding_id}/revision")
+async def request_revision(
+    session_id: str, finding_id: str, authorization: str | None = Header(default=None)
+):
+    """A labelled automated re-check of the round, with the candidate's correction."""
+    try:
+        candidate_id, directory, _ = _report_for(authorization, session_id)
+    except UnknownCandidate:
+        return _error(401, "Not signed in.")
+    except NotFound:
+        return _error(404, "No such session.")
+    except FeedbackError as exc:
+        return _error(exc.status, str(exc))
+    if get_settings().evaluator_mode == "unavailable":
+        return _error(503, "No evaluation model is configured, so a re-check cannot run.")
+    try:
+        revision = _feedback().request_revision(candidate_id, session_id, finding_id)
+    except FeedbackError as exc:
+        return _error(exc.status, str(exc))
+    return {"revision": revision}
+
+
+# ---------------------------------------------------------------------------
+# Targeted practice
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/practice")
+async def practices(authorization: str | None = Header(default=None)):
+    try:
+        candidate_id = _candidate(authorization)
+    except UnknownCandidate:
+        return _error(401, "Not signed in.")
+    return {
+        "practice": [
+            practice_view(REGISTRY, candidate_id, record)
+            for record in list_practices(REGISTRY, candidate_id)
+        ]
+    }
+
+
+@app.post("/api/practice", status_code=201)
+async def start_practice(request: Request, authorization: str | None = Header(default=None)):
+    """
+    "Practise this gap". The body names a session and a finding; everything
+    else is derived from that session's stored report, transcript and intake.
+    """
+    try:
+        candidate_id = _candidate(authorization)
+    except UnknownCandidate:
+        return _error(401, "Not signed in.")
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        return _error(422, "Send a JSON body.")
+    if not isinstance(body, dict):
+        return _error(422, "Send a JSON object.")
+    parent_practice = str(body.get("parent_practice_id") or "") or None
+    session_id = str(body.get("session_id") or "")
+    finding_id = str(body.get("finding_id") or "")
+    mode = str(body.get("mode") or "coached")
+    try:
+        if parent_practice:
+            # An unaided variation of an earlier practice: same finding, new question.
+            parent = load_practice(REGISTRY, candidate_id, parent_practice)
+            session_id = parent["parent"]["session_id"]
+            finding_id = parent["parent"]["finding_id"]
+            mode = "unaided"
+        record = create_practice(
+            REGISTRY,
+            candidate_id,
+            session_id=session_id,
+            finding_id=finding_id,
+            minutes=int(body.get("minutes") or 5),
+            mode=mode,
+            parent_practice_id=parent_practice,
+        )
+    except NotFound:
+        return _error(404, "No such session or practice.")
+    except PracticeError as exc:
+        return _error(exc.status, str(exc))
+    except (TypeError, ValueError) as exc:
+        return _error(422, str(exc))
+    return practice_view(REGISTRY, candidate_id, record)
+
+
+@app.get("/api/practice/{practice_id}")
+async def get_practice(practice_id: str, authorization: str | None = Header(default=None)):
+    try:
+        candidate_id = _candidate(authorization)
+        record = load_practice(REGISTRY, candidate_id, practice_id)
+    except UnknownCandidate:
+        return _error(401, "Not signed in.")
+    except NotFound:
+        return _error(404, "No such practice.")
+    return practice_view(REGISTRY, candidate_id, record)
+
+
+@app.post("/api/practice/{practice_id}/coaching")
+async def show_coaching(practice_id: str, authorization: str | None = Header(default=None)):
+    """Record that the checklist was shown, so the attempt is labelled coached."""
+    try:
+        candidate_id = _candidate(authorization)
+        record = mark_coaching_shown(REGISTRY, candidate_id, practice_id)
+    except UnknownCandidate:
+        return _error(401, "Not signed in.")
+    except NotFound:
+        return _error(404, "No such practice.")
+    except PracticeError as exc:
+        return _error(exc.status, str(exc))
+    return practice_view(REGISTRY, candidate_id, record)
 
 
 @app.get("/api/history")
@@ -477,8 +826,12 @@ async def history(authorization: str | None = Header(default=None)):
         return _error(401, "Not signed in.")
     return {
         "sessions": session_rows(REGISTRY, REPORT_STORE, candidate_id),
-        "comparisons": comparisons(REPORT_STORE, candidate_id),
-        "recurring_gaps": recurring_gaps(REPORT_STORE, candidate_id),
+        "comparisons": comparisons(REPORT_STORE, candidate_id, REGISTRY),
+        "recurring_gaps": recurring_gaps(REPORT_STORE, candidate_id, REGISTRY),
+        "practice": [
+            practice_view(REGISTRY, candidate_id, record)
+            for record in list_practices(REGISTRY, candidate_id)
+        ],
     }
 
 
@@ -502,32 +855,99 @@ async def delete_my_data(authorization: str | None = Header(default=None)):
         candidate_id = _candidate(authorization)
     except UnknownCandidate:
         return _error(401, "Not signed in.")
-    session_ids = REGISTRY.session_ids(candidate_id)
-    for task_id in list(_INTAKE_TASKS):
-        task = _INTAKE_TASKS[task_id]
-        if task.done():
-            _INTAKE_TASKS.pop(task_id, None)
-    report_rows = REPORT_STORE.delete_candidate(candidate_id)
     try:
-        legacy = delete_candidate_data(
-            candidate_id,
-            store_path=STORE_PATH,
-            session_dirs=(LOG_DIR,),
-            report_dirs=(REPORT_DIR,),
-            intake_roots=(INTAKE_DIR,),
-        )
+        return await erase_candidate(candidate_id)
     except UnsafeIdentifier as exc:
         return _error(400, str(exc))
+
+
+async def erase_candidate(candidate_id: str) -> dict:
+    """
+    Delete everything for one candidate, in an order that cannot leave a
+    background job to recreate it:
+
+      1. close any live interview without writing its transcript;
+      2. cancel and await evaluation, revision and intake tasks;
+      3. remove report-store rows, legacy rows and the candidate directory
+         (intakes, sessions, round results, disputes, revisions, practice).
+
+    Copies held by external providers under their own retention policies are
+    outside this app's control and are not claimed as deleted.
+    """
+    session_ids = REGISTRY.session_ids(candidate_id)
+    practice_root = REGISTRY.candidate_dir(candidate_id) / "practice"
+    practice_count = (
+        sum(1 for p in practice_root.iterdir() if p.is_dir()) if practice_root.is_dir() else 0
+    )
+    live_closed = 0
+    for ctx in [c for c in list(_LIVE.values()) if c.candidate_id == candidate_id]:
+        ctx.discard = True
+        ctx.live.discard_outputs = True
+        await _close_out(ctx)
+        live_closed += 1
+    cancelled = await EVALUATION.cancel_candidate(candidate_id)
+    for intake_id in [i for i, owner in _INTAKE_OWNERS.items() if owner == candidate_id]:
+        task = _INTAKE_TASKS.pop(intake_id, None)
+        _INTAKE_OWNERS.pop(intake_id, None)
+        if task is not None and not task.done():
+            task.cancel()
+            cancelled += 1
+    report_rows = REPORT_STORE.delete_candidate(candidate_id)
+    legacy = delete_candidate_data(
+        candidate_id,
+        store_path=STORE_PATH,
+        session_dirs=(LOG_DIR,),
+        report_dirs=(REPORT_DIR,),
+        intake_roots=(INTAKE_DIR,),
+    )
     removed = REGISTRY.delete(candidate_id)
     INTAKE_LIMITER.forget(candidate_id)
     return {
         "candidate_id": candidate_id,
         "session_ids": session_ids,
+        "practice_records_deleted": practice_count,
+        "live_sessions_closed": live_closed,
+        "background_tasks_cancelled": cancelled,
         "report_rows_deleted": report_rows,
         "legacy_store_rows_deleted": legacy.store_rows_deleted,
         "paths_deleted": len(removed) + len(legacy.paths_deleted),
         "clean": legacy.clean and not REGISTRY.root.joinpath(candidate_id).exists(),
+        "external_providers": (
+            "Text and audio sent to Groq and Deepgram for processing are subject to "
+            "their own retention policies; this app cannot delete copies they hold."
+        ),
     }
+
+
+_RETENTION_TASK: asyncio.Task | None = None
+
+
+async def _retention_loop() -> None:
+    settings = get_settings()
+    while True:
+        try:
+            await retention_sweep(
+                REGISTRY,
+                settings.guest_retention_days,
+                erase_candidate,
+                skip=lambda cid: any(c.candidate_id == cid for c in _LIVE.values()),
+            )
+        except Exception:  # noqa: BLE001 — the sweep must never take the server down
+            pass
+        await asyncio.sleep(settings.retention_sweep_interval_s)
+
+
+async def _start_retention() -> None:
+    global _RETENTION_TASK
+    if get_settings().guest_retention_days > 0 and _RETENTION_TASK is None:
+        _RETENTION_TASK = asyncio.create_task(_retention_loop())
+
+
+async def _stop_retention() -> None:
+    global _RETENTION_TASK
+    if _RETENTION_TASK is not None:
+        _RETENTION_TASK.cancel()
+        _RETENTION_TASK = None
 
 
 # ---------------------------------------------------------------------------
@@ -584,11 +1004,21 @@ class SessionContext:
     session_dir: Path | None = None
     started: bool = False
     opening: dict | None = None
+    # Set when the candidate deletes their data mid-session: close without
+    # writing anything or queueing evaluation.
+    discard: bool = False
+    closed_out: bool = False
 
 
 async def _reject(websocket: WebSocket, reason: str, code: int = 1008, **extra) -> None:
     await websocket.send_text(json.dumps({"type": "session_rejected", "reason": reason, **extra}))
     await websocket.close(code=code)
+
+
+def _now() -> str:
+    from interview.candidates import utc_now
+
+    return utc_now()
 
 
 @app.websocket("/ws/session")
@@ -615,6 +1045,17 @@ async def ws_session(websocket: WebSocket):
     intake_dir: Path | None = None
     interview: InterviewConfig | None = None
     claims: list[Claim] = []
+    objective: dict | None = None
+    practice: dict | None = None
+    pack_overrides: dict | None = None
+    if settings.interviewer_mode == "unavailable":
+        await _reject(
+            websocket,
+            "No interviewer is available: the server has no model credential and "
+            "mock providers are switched off.",
+            code=1011,
+        )
+        return
     # The candidate's bearer credential. Not `token`: that key is the
     # single-use resume ticket in `session_resume`.
     if opening.get("auth_token"):
@@ -622,6 +1063,17 @@ async def ws_session(websocket: WebSocket):
             candidate_id = REGISTRY.resolve(str(opening["auth_token"]))
         except UnknownCandidate:
             await _reject(websocket, "Your session token is not valid. Reload the page to start again.")
+            return
+    if opening.get("practice_id"):
+        # A targeted practice attempt: everything comes from the stored record.
+        if candidate_id is None:
+            await _reject(websocket, "Sign-in is required to start a practice.")
+            return
+        try:
+            practice = load_practice(REGISTRY, candidate_id, str(opening["practice_id"]))
+            opening = {**opening, "intake_id": practice["parent"]["intake_id"]}
+        except NotFound:
+            await _reject(websocket, "That practice was not found.")
             return
     if opening.get("intake_id"):
         if candidate_id is None:
@@ -640,7 +1092,20 @@ async def ws_session(websocket: WebSocket):
                 f"({status.get('state', 'unknown')}). Finish setup before starting.",
             )
             return
+        # Consent recorded at intake covers documents and (for voice) speech.
+        # An intake from before consent existed needs it confirmed now.
+        if read_consent(intake_dir) is None:
+            if not opening.get("consent"):
+                await _reject(
+                    websocket,
+                    "Please confirm consent to external processing before starting.",
+                    needs_consent=True,
+                )
+                return
+            write_consent(intake_dir, voice=str(opening.get("lane", "voice")) != "text")
         interview = InterviewConfig.model_validate(read_json(intake_dir / "config.json", {}))
+        # The statements the candidate accepted at review: excluded ones are
+        # gone, edited ones are their corrections (labelled as such).
         claims = [
             Claim(
                 id=str(item["id"]),
@@ -649,10 +1114,30 @@ async def ws_session(websocket: WebSocket):
                 evidence_kind=str(item.get("evidence_kind") or "candidate_assertion"),
                 source_ref=str(item.get("source_path") or ""),
             )
-            for item in (read_json(intake_dir / "claims.json", {}) or {}).get("claims", [])
+            for item in accepted_claims(intake_dir)
         ]
+        objective = objective_for(intake_dir)
+        if practice is not None:
+            from interview.packs.model import load_pack as _load_pack
+
+            # One round, the practice's own short pack, the round's own rubric.
+            interview = InterviewConfig.model_validate(
+                {
+                    **interview.model_dump(mode="json"),
+                    "round": practice["round"],
+                    "total_seconds": float(practice["minutes"]) * 60.0,
+                    "lane": "text" if str(opening.get("lane")) == "text" else interview.lane,
+                }
+            )
+            pack_overrides = {
+                practice["round"]: practice_pack(practice, _load_pack(practice["pack_id"]))
+            }
+            objective = {
+                "competency": practice.get("competency"),
+                "note": f"Targeted practice: {practice['dimension_label']}",
+            }
         try:
-            Coordinator(interview)
+            Coordinator(interview, pack_overrides=pack_overrides)
         except PackUnavailable as exc:
             await _reject(websocket, str(exc))
             return
@@ -694,6 +1179,8 @@ async def ws_session(websocket: WebSocket):
         # Never the stage-5 fixture: intake claims, or none.
         claims_override=claims,
         interview=interview,
+        objective=objective,
+        pack_overrides=pack_overrides,
     )
     holder = SocketHolder()
 
@@ -781,10 +1268,29 @@ async def ws_session(websocket: WebSocket):
                 "coverage_note": interview.coverage_note() if interview else "",
                 "evidence_note": interview.evidence_note() if interview else "",
                 "interviewer": "deterministic" if cfg.use_mock_llm else "groq",
+                "kind": "practice" if practice else "interview",
+                "practice": (
+                    {
+                        "practice_id": practice["practice_id"],
+                        "parent_session_id": practice["parent"]["session_id"],
+                        "finding_id": practice["parent"]["finding_id"],
+                        "dimension_id": practice["dimension_id"],
+                        "dimension_label": practice["dimension_label"],
+                        "mode": practice["mode"],
+                        "coached": bool(practice.get("coached")),
+                    }
+                    if practice
+                    else None
+                ),
+                "objective": objective if not practice else None,
                 "state": "active",
                 "state_history": [{"state": "active", "at": _now()}],
             },
         )
+        if practice is not None:
+            note_attempt(
+                REGISTRY, candidate_id, practice["practice_id"], session_id=session_id, lane=lane
+            )
 
     async def on_tts(event) -> None:
         if event.type != "tts_chunk":
@@ -796,13 +1302,23 @@ async def ws_session(websocket: WebSocket):
             await holder.send_bytes(b"\x00" * (320 * 20))
 
     bus.subscribe("tts_chunk", on_tts)
+
+    async def on_partial(event) -> None:
+        # Interim STT text, so the room can show the candidate they are being
+        # heard. Display only: the recorded answer is still the final transcript.
+        # Typed answers put a synthetic partial on the bus; that is not speech.
+        if event.producer == "runtime_ingest":
+            return
+        await holder.send_text(
+            json.dumps({"type": "partial", "turn_id": event.turn_id, "text": event.text})
+        )
+
+    bus.subscribe("partial", on_partial)
+    _LIVE[session_id] = ctx
     await _run_socket(websocket, ctx, opening=opening)
 
 
-def _now() -> str:
-    from interview.candidates import utc_now
 
-    return utc_now()
 
 
 async def _start_live(ctx: SessionContext) -> None:
@@ -902,6 +1418,8 @@ async def _run_socket(websocket: WebSocket, ctx: SessionContext, *, opening: dic
                 "resumed": reconnected,
                 "personalised": live.config.interview is not None,
                 "interviewer": "deterministic" if live.config.use_mock_llm else "groq",
+                "practice": bool(live.config.pack_overrides),
+                "objective": live.config.objective,
                 "voice": {
                     "enabled": ctx.voice is not None,
                     "provider": "deepgram" if ctx.voice is not None else "mock",
@@ -921,6 +1439,9 @@ async def _run_socket(websocket: WebSocket, ctx: SessionContext, *, opening: dic
         await _resend_current_question(ctx)
 
     push_to_talk = False
+    # "Done answering" waits briefly for the provider's last words; run it
+    # beside this loop so acks and audio keep flowing meanwhile.
+    finalising: set[asyncio.Task] = set()
     last_played_ms = 0
     current_utt = ""
     dropped_binary = 0
@@ -1003,7 +1524,9 @@ async def _run_socket(websocket: WebSocket, ctx: SessionContext, *, opening: dic
 
             elif mtype == "answer_done":
                 if ctx.voice is not None:
-                    await ctx.voice.finalise_turn("client")
+                    task = asyncio.create_task(ctx.voice.finalise_turn("client"))
+                    finalising.add(task)
+                    task.add_done_callback(finalising.discard)
 
             elif mtype == "push_to_talk":
                 push_to_talk = bool(msg.get("on", True))
@@ -1094,8 +1617,14 @@ async def _close_out(ctx: SessionContext) -> None:
     evaluation. Evaluation starts only after the live session is closed and the
     log is flushed (contract 6).
     """
+    if ctx.closed_out:
+        return
+    ctx.closed_out = True
+    _time = time
+
+    ended_ts = _time.time()
     live = ctx.live
-    if ctx.session_dir is not None:
+    if ctx.session_dir is not None and not ctx.discard:
         set_state(ctx.session_dir, "finalising")
     if not live._closed:
         await live.end(reason="disconnect")
@@ -1105,8 +1634,11 @@ async def _close_out(ctx: SessionContext) -> None:
     RECONNECT.revoke(ctx.session_id)
     SESSION_CAP.release(ctx.session_id)
     _PARKED.pop(ctx.session_id, None)
+    _LIVE.pop(ctx.session_id, None)
     await ctx.bus.drain()
     await ctx.logger.close()
+    if ctx.discard:
+        return
     if ctx.session_dir is not None and ctx.candidate_id is not None:
         coordinator = live.coordinator
         set_state(
@@ -1117,6 +1649,16 @@ async def _close_out(ctx: SessionContext) -> None:
             candidate_turns=sum(
                 1 for e in live.transcript.entries if e.get("speaker") == "candidate"
             ),
+            # Audit of plan-based questions asked because the model failed.
+            degraded_turns=list(live.degraded_turns),
+            evaluation={
+                "timings": {
+                    "interview_ended_at": _now(),
+                    "interview_ended_ts": ended_ts,
+                    "finalised_at": _now(),
+                    "finalise_s": round(_time.time() - ended_ts, 3),
+                }
+            },
         )
         EVALUATION.enqueue(ctx.candidate_id, ctx.session_id)
 

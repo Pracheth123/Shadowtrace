@@ -28,7 +28,10 @@ import {
   api,
   ensureGuest,
   HTTP_BASE,
+  jsonBody,
+  type IntakeClaim,
   type IntakeResult,
+  type ReviewAction,
   type Intensity,
   type Lane,
   type RoleFamily,
@@ -66,9 +69,11 @@ const STAGE_LABEL: Record<string, string> = {
 
 const EVIDENCE_LABEL: Record<string, string> = {
   candidate_assertion: "your statement",
-  repository: "in the repository",
+  repository: "in the repository (shows content exists, not who wrote it)",
   work_sample: "in your work sample",
 };
+
+type Decision = { action: ReviewAction; text: string };
 
 export type SetupPageProps = {
   onStart: (options: SessionOptions) => void;
@@ -98,6 +103,7 @@ export function SetupPage({ onStart, onOpenHistory }: SetupPageProps) {
   const [repoUrl, setRepoUrl] = useState("");
   const [workSample, setWorkSample] = useState<File | null>(null);
   const [health, setHealth] = useState<Record<string, any> | null>(null);
+  const [consent, setConsent] = useState(false);
   const pollRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -151,6 +157,10 @@ export function SetupPage({ onStart, onOpenHistory }: SetupPageProps) {
       });
       return;
     }
+    if (!consent) {
+      setError({ message: "Please read and confirm how your documents and speech are processed." });
+      return;
+    }
     const form = new FormData();
     form.set("target_role", targetRole.trim());
     form.set("role_family", family);
@@ -162,6 +172,7 @@ export function SetupPage({ onStart, onOpenHistory }: SetupPageProps) {
     form.set("job_description", jobDescription);
     form.set("company_context", company);
     form.set("repo_url", repoUrl.trim());
+    form.set("consent", "1");
     if (resume) form.set("resume", resume);
     if (workSample) form.set("work_sample", workSample);
     setSubmitting(true);
@@ -232,44 +243,35 @@ export function SetupPage({ onStart, onOpenHistory }: SetupPageProps) {
           <p key={warning} className="rounded-md bg-muted px-3 py-2 text-sm">{warning}</p>
         ))}
 
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">What the interviewers will ask about</CardTitle>
-            <CardDescription>{result.evidence_note}</CardDescription>
-          </CardHeader>
-          <CardPanel>
-            {claims.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                No specific statements were found. Follow-ups will anchor on what you say.
-              </p>
-            ) : (
-              <ul className="flex flex-col gap-2">
-                {claims.map((claim) => (
-                  <li key={claim.id} className="text-sm">
-                    “{claim.text}”{" "}
-                    <Badge variant="muted" size="sm">
-                      {EVIDENCE_LABEL[claim.evidence_kind] ?? claim.evidence_kind}
-                      {claim.evidence_kind === "repository" ? ` · ${claim.source_path}` : ""}
-                    </Badge>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </CardPanel>
-        </Card>
+        <StatementReview
+          intakeId={intakeId}
+          claims={claims}
+          result={result}
+          onSaved={(next) => setPhase({ kind: "review", intakeId, result: next })}
+          onStart={() =>
+            onStart({
+              intakeId,
+              lane: chosenLane,
+              intensity: String(cfg.intensity ?? intensity) as Intensity,
+              consent: true,
+            })
+          }
+          onChangeSetup={() => setPhase({ kind: "form" })}
+        />
 
         {fit && fit.required.length > 0 && (
           <Card>
             <CardHeader>
-              <CardTitle className="text-base">Job description overlap</CardTitle>
+              <CardTitle className="text-base">Document overlap with the job description</CardTitle>
               <CardDescription>
-                Terms from the job description compared with your background. For
-                preparation only — not a score.
+                Which job-description terms also appear in the documents you supplied. This is
+                document overlap only — it is not a measure of ability, and a term missing from
+                your documents does not mean you lack the skill.
               </CardDescription>
             </CardHeader>
             <CardPanel className="flex flex-col gap-1 text-sm">
-              {fit.matched.length > 0 && <p>Mentioned in your background: {fit.matched.join(", ")}</p>}
-              {fit.missing.length > 0 && <p>Not mentioned: {fit.missing.join(", ")}</p>}
+              {fit.matched.length > 0 && <p>Also in your documents: {fit.matched.join(", ")}</p>}
+              {fit.missing.length > 0 && <p>Not in your documents: {fit.missing.join(", ")}</p>}
             </CardPanel>
           </Card>
         )}
@@ -299,23 +301,6 @@ export function SetupPage({ onStart, onOpenHistory }: SetupPageProps) {
           </CardPanel>
         </Card>
 
-        <div className="flex flex-wrap gap-2">
-          <Button
-            size="lg"
-            onClick={() =>
-              onStart({
-                intakeId,
-                lane: chosenLane,
-                intensity: String(cfg.intensity ?? intensity) as Intensity,
-              })
-            }
-          >
-            Start the interview
-          </Button>
-          <Button variant="ghost" onClick={() => setPhase({ kind: "form" })}>
-            Change setup
-          </Button>
-        </div>
       </div>
     );
   }
@@ -492,6 +477,12 @@ export function SetupPage({ onStart, onOpenHistory }: SetupPageProps) {
               <FieldDescription>A document you wrote, e.g. a plan, analysis or design doc.</FieldDescription>
             </Field>
 
+            <ConsentBlock
+              checked={consent}
+              onChange={setConsent}
+              retentionDays={Number(health?.retention_days ?? 30)}
+            />
+
             {error && (
               <div role="alert" className="flex gap-2 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
                 <CircleAlertIcon className="mt-0.5 size-4 shrink-0" />
@@ -512,12 +503,254 @@ export function SetupPage({ onStart, onOpenHistory }: SetupPageProps) {
           <div className="flex gap-1.5 text-xs text-muted-foreground">
             <CircleAlertIcon className="mt-px size-3 shrink-0" />
             <p>
-              Practice only — nothing here screens or ranks you. You are a guest in
-              this browser: clearing site data loses your history.
+              Practice only — nothing here screens or ranks you. Scores are experimental coaching
+              indicators, not hiring predictions or judgements of truth.
             </p>
           </div>
         </CardFooter>
       </Card>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Consent
+// ---------------------------------------------------------------------------
+
+function ConsentBlock({
+  checked,
+  onChange,
+  retentionDays,
+}: {
+  checked: boolean;
+  onChange: (value: boolean) => void;
+  retentionDays: number;
+}) {
+  return (
+    <div className="flex flex-col gap-2 rounded-md border border-border px-3 py-3 text-xs text-muted-foreground">
+      <p className="text-sm font-medium text-foreground">Before anything is uploaded</p>
+      <ul className="flex list-disc flex-col gap-1 pl-4">
+        <li>
+          Text from your resume, background, job description and answers is sent to <strong>Groq</strong> (an
+          external AI provider) to run the interviewer and produce feedback.
+        </li>
+        <li>
+          If you answer by voice, your audio is streamed to <strong>Deepgram</strong> for speech-to-text, and the
+          interviewer&apos;s lines are sent there to be spoken.
+        </li>
+        <li>
+          Those providers process data under their own terms and retention policies. This app cannot delete
+          copies they hold.
+        </li>
+        <li>
+          You are a <strong>guest</strong>: a private key stored in this browser is your only access. Clearing
+          site data or switching device loses access, and there is no recovery.
+        </li>
+        <li>
+          {retentionDays > 0
+            ? `Your data here is deleted automatically after ${retentionDays} days without activity, or at any time with "Delete my data".`
+            : `Your data here is kept until you use "Delete my data".`}
+        </li>
+      </ul>
+      <label className="flex items-start gap-2 text-sm text-foreground">
+        <input
+          type="checkbox"
+          className="mt-1"
+          checked={checked}
+          onChange={(event) => onChange(event.target.checked)}
+        />
+        I understand and agree to this processing for my practice session.
+      </label>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Source review
+// ---------------------------------------------------------------------------
+
+function StatementReview({
+  intakeId,
+  claims,
+  result,
+  onSaved,
+  onStart,
+  onChangeSetup,
+}: {
+  intakeId: string;
+  claims: IntakeClaim[];
+  result: IntakeResult;
+  onSaved: (result: IntakeResult) => void;
+  onStart: () => void;
+  onChangeSetup: () => void;
+}) {
+  const [decisions, setDecisions] = useState<Record<string, Decision>>(() =>
+    Object.fromEntries(
+      claims.map((claim) => [
+        claim.id,
+        { action: claim.review?.action ?? "keep", text: claim.review?.text ?? claim.text },
+      ]),
+    ),
+  );
+  const [objective, setObjective] = useState(result.review?.objective?.competency ?? "");
+  const [note, setNote] = useState(result.review?.objective?.note ?? "");
+  const [saving, setSaving] = useState(false);
+  const [problem, setProblem] = useState("");
+  const objectives = Object.entries(result.objectives ?? {});
+
+  const set = (id: string, update: Partial<Decision>) =>
+    setDecisions((current) => ({ ...current, [id]: { ...current[id], ...update } }));
+
+  const save = async (): Promise<boolean> => {
+    setSaving(true);
+    setProblem("");
+    try {
+      const next = await api<IntakeResult>(
+        `/api/intake/${intakeId}/review`,
+        jsonBody(
+          {
+            statements: claims.map((claim) => ({
+              id: claim.id,
+              action: decisions[claim.id].action,
+              ...(decisions[claim.id].action === "edit" ? { text: decisions[claim.id].text } : {}),
+            })),
+            objective: objective ? { competency: objective, note } : null,
+          },
+          "PUT",
+        ),
+      );
+      onSaved(next);
+      return true;
+    } catch (err) {
+      setProblem((err as Error).message);
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <>
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Check what the interviewers will ask about</CardTitle>
+          <CardDescription>
+            Each statement is shown where it came from. Keep it, correct what you meant, or exclude it. A
+            correction is used as your own statement — it is never presented as a quote from your file, and
+            the original stays on record. {result.evidence_note}
+          </CardDescription>
+        </CardHeader>
+        <CardPanel className="flex flex-col gap-4">
+          {claims.length === 0 && (
+            <p className="text-sm text-muted-foreground">
+              No specific statements were found. Follow-ups will anchor on what you say.
+            </p>
+          )}
+          {claims.map((claim) => {
+            const decision = decisions[claim.id];
+            const span = claim.source_span;
+            return (
+              <div key={claim.id} className="flex flex-col gap-2 border-b border-border pb-3 text-sm last:border-b-0">
+                <p className="flex flex-wrap items-center gap-2">
+                  <span className={decision.action === "exclude" ? "line-through text-muted-foreground" : ""}>“{claim.text}”</span>
+                  <Badge variant="muted" size="sm">
+                    {EVIDENCE_LABEL[claim.evidence_kind] ?? claim.evidence_kind}
+                    {claim.evidence_kind === "repository" ? ` · ${claim.source_path}` : ""}
+                  </Badge>
+                </p>
+                <p className="rounded-md bg-muted px-2 py-1 text-xs text-muted-foreground">
+                  Source ({claim.source}):{" "}
+                  {span?.found ? (
+                    <>
+                      …{span.before}
+                      <mark className="bg-secondary/60 text-foreground">{span.match}</mark>
+                      {span.after}…
+                    </>
+                  ) : (
+                    <>“{claim.quote ?? claim.text}”</>
+                  )}
+                </p>
+                <div className="flex flex-wrap gap-1" role="group" aria-label="What to do with this statement">
+                  {(["keep", "edit", "exclude"] as ReviewAction[]).map((action) => (
+                    <Button
+                      key={action}
+                      size="sm"
+                      variant={decision.action === action ? "secondary" : "ghost"}
+                      aria-pressed={decision.action === action}
+                      onClick={() => set(claim.id, { action })}
+                    >
+                      {action === "keep" ? "Keep" : action === "edit" ? "Correct the meaning" : "Exclude"}
+                    </Button>
+                  ))}
+                </div>
+                {decision.action === "edit" && (
+                  <div className="flex flex-col gap-1">
+                    <textarea
+                      className="min-h-16 w-full rounded-md border border-input bg-card px-3 py-2 text-sm"
+                      maxLength={300}
+                      value={decision.text}
+                      onChange={(event) => set(claim.id, { text: event.target.value })}
+                      aria-label="What you meant"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Your correction — used as your own statement, not as a quote from your file. Only write what
+                      is true.
+                    </p>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </CardPanel>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Practice focus (optional)</CardTitle>
+          <CardDescription>
+            Steers follow-up questions toward one area. Every core question is still asked, and time and
+            follow-up limits are unchanged.
+          </CardDescription>
+        </CardHeader>
+        <CardPanel className="flex flex-col gap-2">
+          <Select
+            aria-label="Practice focus"
+            items={[{ label: "No particular focus", value: "" }, ...objectives.map(([value, label]) => ({ label, value }))]}
+            value={objective}
+            onChange={(event) => setObjective(event.target.value)}
+          />
+          {objective && (
+            <Input
+              placeholder="Optional note, e.g. the project you want to be asked about"
+              maxLength={200}
+              value={note}
+              onChange={(event) => setNote(event.target.value)}
+            />
+          )}
+        </CardPanel>
+      </Card>
+
+      {problem && (
+        <p role="alert" className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">{problem}</p>
+      )}
+
+      <div className="flex flex-wrap gap-2">
+        <Button
+          size="lg"
+          disabled={saving}
+          onClick={async () => {
+            if (await save()) onStart();
+          }}
+        >
+          {saving ? "Saving…" : "Save and start the interview"}
+        </Button>
+        <Button variant="outline" disabled={saving} onClick={() => void save()}>
+          Save review
+        </Button>
+        <Button variant="ghost" onClick={onChangeSetup}>
+          Change setup
+        </Button>
+      </div>
+    </>
   );
 }

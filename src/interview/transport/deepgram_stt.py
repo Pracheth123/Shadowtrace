@@ -22,14 +22,17 @@ Turn boundaries are the part most easily got wrong, so to be explicit:
      finalises a *segment*, not the answer. Treating each as a completed answer
      is what makes the interviewer reply mid-sentence, and it is what the
      previous adapter did.
-  - `speech_final: true` means provider endpointing detected a pause: the
-     accumulated segments now form a complete utterance.
-  - `UtteranceEnd` is a separate message that arrives when endpointing did not
-     fire (a trailing segment with no pause detected). It needs
-     `vad_events=true`. It is a backstop, not a duplicate.
+  - `speech_final: true` means provider endpointing detected a pause (300 ms).
+  - `UtteranceEnd` arrives after ~1 s with no new words. It needs
+     `vad_events=true`.
 
-So: buffer `is_final` segments, and emit exactly one `final_transcript` when
-either boundary signal arrives — whichever comes first, never both.
+Neither is the end of an answer: candidates pause to think for longer than
+both, and ending the answer on them moved the interview to the next question
+mid-thought. So both only start a silence clock. Segments are buffered, and
+exactly one `final_transcript` is emitted when the candidate has been silent
+for ANSWER_END_SILENCE_MS after their last recognised word (longer,
+ANSWER_END_EXTENDED_MS, when the answer sounds unfinished), or when they press
+"Done answering".
 """
 
 from __future__ import annotations
@@ -38,6 +41,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Awaitable, Callable
@@ -54,6 +58,21 @@ log = logging.getLogger(__name__)
 # nothing and avoids a reconnect in the middle of a candidate's thinking pause.
 KEEPALIVE_INTERVAL_S = 5.0
 CONNECT_TIMEOUT_S = 10.0
+# An answer that ends on one of these is probably mid-thought ("...and", "so
+# um"), so it gets the longer silence allowance before it is treated as over.
+TRAILING_WORDS = frozenset(
+    {
+        "and", "so", "because", "but", "or", "that", "which", "if", "then",
+        "when", "although", "however", "like", "the", "a", "an", "to", "of",
+        "with", "um", "uh", "erm", "hmm", "mm", "well", "basically", "also",
+    }
+)
+# Answers shorter than this are usually a start ("So I think..."), not an end.
+SHORT_ANSWER_WORDS = 4
+# "Done answering" asks Deepgram to finalise buffered audio; wait this long for
+# the last words before closing the answer without them.
+CLIENT_FINALIZE_WAIT_S = 1.0
+_ANSWER_WORDS = re.compile(r"[\w']+")
 # Across all keyterms, per the keyterm documentation.
 KEYTERM_TOKEN_BUDGET = 500
 
@@ -112,6 +131,7 @@ class SttStats:
     turns_completed: int = 0
     boundary_counts: dict[str, int] = field(default_factory=dict)
     bytes_sent: int = 0
+    reconnects: int = 0
     errors: list[str] = field(default_factory=list)
 
     def note_boundary(self, kind: str) -> None:
@@ -145,6 +165,7 @@ class DeepgramStt:
         producer: str = "deepgram_stt",
         url_override: str | None = None,
         on_speech_started: Callable[[], Awaitable[None]] | None = None,
+        on_lost: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         self._bus = bus
         self._session_id = session_id
@@ -156,6 +177,10 @@ class DeepgramStt:
         self._producer = producer
         self._url_override = url_override
         self._on_speech_started = on_speech_started
+        # Called once if the provider stream dies while the session is open,
+        # so the candidate is told instead of talking to a deaf socket.
+        self._on_lost = on_lost
+        self._lost_reported = False
 
         self._ws = None
         self._recv_task: asyncio.Task | None = None
@@ -170,6 +195,14 @@ class DeepgramStt:
         self._revision = 0
         self._last_partial_text = ""
         self._emitting = asyncio.Lock()
+        # Ends the answer after enough silence; see `_watch_answer_end`.
+        self._answer_task: asyncio.Task | None = None
+        # Monotonic time the candidate was last heard saying a word.
+        self._last_speech_at = 0.0
+        # Set when a finalised segment arrives; "Done answering" waits on it.
+        self._final_seen = asyncio.Event()
+        # The provider socket died and has not been replaced yet.
+        self._dead = False
 
         self.stats = SttStats()
 
@@ -248,24 +281,55 @@ class DeepgramStt:
 
     async def send_audio(self, pcm: bytes) -> None:
         """Forward converted PCM. Silently ignored once closed."""
-        if self._closed or self._ws is None or not pcm:
+        if self._closed or self._dead or self._ws is None or not pcm:
             return
         try:
             await self._ws.send(pcm)
             self.stats.bytes_sent += len(pcm)
         except Exception as exc:  # noqa: BLE001
             self.stats.errors.append(f"send: {exc}")
-            self._closed = True
+            self._dead = True
+            await self._report_lost(f"send failed: {exc}")
 
     async def finalise_turn(self, boundary: str = "client") -> None:
         """
         Close the current turn from our side.
 
-        Used by push-to-talk release and by the session's own timeout guard. If
-        the provider has already closed the turn there is nothing buffered and
-        this is a no-op, so it cannot produce a second answer.
+        Used by "Done answering" and push-to-talk release. Deepgram is asked to
+        finalise what it has buffered first, so the last words spoken before
+        the click are part of the answer. If nothing is buffered this is a
+        no-op, so it cannot produce a second answer.
         """
+        if self._ws is not None and not (self._closed or self._dead):
+            self._final_seen.clear()
+            with contextlib.suppress(Exception):
+                await self._ws.send(json.dumps({"type": "Finalize"}))
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(self._final_seen.wait(), CLIENT_FINALIZE_WAIT_S)
         await self._emit_turn(boundary)
+
+    async def reconnect(self) -> None:
+        """
+        Replace a dead provider socket, keeping the answer in progress.
+
+        Raises `SttUnavailable` if the provider cannot be reached; the caller
+        decides whether to retry or tell the candidate.
+        """
+        if self._closed:
+            return
+        current = asyncio.current_task()
+        for task in (self._keepalive_task, self._recv_task):
+            if task and task is not current and not task.done():
+                task.cancel()
+        old, self._ws = self._ws, None
+        if old is not None:
+            with contextlib.suppress(Exception):
+                await old.close()
+        await self.start()
+        self._dead = False
+        self._lost_reported = False
+        self.stats.reconnects += 1
+        log.info("Deepgram STT reconnected for session %s", self._session_id)
 
     async def close(self) -> None:
         """
@@ -277,6 +341,7 @@ class DeepgramStt:
         if self._closed and self._ws is None:
             return
         self._closed = True
+        self._cancel_answer_watch()
         for task in (self._keepalive_task, self._recv_task):
             if task and not task.done():
                 task.cancel()
@@ -321,16 +386,39 @@ class DeepgramStt:
         except Exception as exc:  # noqa: BLE001
             self.stats.errors.append(f"recv: {exc}")
             log.warning("Deepgram STT receive loop ended: %s", exc)
+            self._dead = True
+            await self._report_lost(f"connection lost: {exc}")
+            return
+        if self._closed:
+            return
+        # The provider closed the stream without an error frame (for example
+        # its idle timeout). Unexpected unless we asked for it in close().
+        log.warning("Deepgram STT stream closed by the provider")
+        self._dead = True
+        await self._report_lost("connection closed by the provider")
+
+    async def _report_lost(self, reason: str) -> None:
+        """Tell the session once that transcription has stopped. Not on our own close()."""
+        if self._closed or self._lost_reported:
+            return
+        self._lost_reported = True
+        log.error("Deepgram STT lost for session %s: %s", self._session_id, reason)
+        if self._on_lost is not None:
+            with contextlib.suppress(Exception):
+                await self._on_lost(reason)
 
     async def _dispatch(self, message: dict) -> None:
         kind = message.get("type")
         if kind == "Results":
             await self._on_results(message)
         elif kind == "UtteranceEnd":
-            # Endpointing did not fire but the provider believes the utterance
-            # ended. Backstop for a trailing segment.
-            await self._emit_turn("utterance_end")
+            # A hint, not a decision: the provider fires this after ~1 s of
+            # quiet, which is a thinking pause, not the end of an answer.
+            self._ensure_answer_watch()
         elif kind == "SpeechStarted":
+            # Voice activity before any words are recognised: keep the answer
+            # open while the candidate starts their next sentence.
+            self._last_speech_at = time.monotonic()
             if self._on_speech_started:
                 await self._on_speech_started()
         elif kind == "Metadata":
@@ -348,12 +436,16 @@ class DeepgramStt:
         alt = alternatives[0]
         text = (alt.get("transcript") or "").strip()
         is_final = bool(message.get("is_final"))
-        speech_final = bool(message.get("speech_final"))
         confidence = alt.get("confidence")
         start = float(message.get("start") or 0.0)
         duration = float(message.get("duration") or 0.0)
 
+        if text:
+            # New words mean the candidate is still talking. Empty results
+            # (Deepgram sends them through silence) must not hold the turn open.
+            self._last_speech_at = time.monotonic()
         if is_final:
+            self._final_seen.set()
             if text:
                 self._segments.append(text)
                 if confidence is not None:
@@ -371,8 +463,10 @@ class DeepgramStt:
                 # partial starts a fresh revision series.
                 self._revision = 0
                 self._last_partial_text = ""
-            if speech_final:
-                await self._emit_turn("speech_final")
+            # `speech_final` is the provider noticing a ~300 ms gap. That is a
+            # breath, so it only starts the silence clock; it does not end the
+            # answer (that cut candidates off mid-thought).
+            self._ensure_answer_watch()
             return
 
         # Interim hypothesis. These are what drive speculation, so they go out
@@ -397,6 +491,58 @@ class DeepgramStt:
         self._last_partial_text = combined
         self.stats.partials += 1
 
+    def answer_wait_s(self) -> float:
+        """
+        How much silence ends the answer now.
+
+        Longer when what was said so far sounds unfinished: a trailing
+        conjunction or filler, a trailing comma, or only a few words.
+        """
+        text = (self._last_partial_text or " ".join(self._segments)).strip()
+        words = _ANSWER_WORDS.findall(text.casefold())
+        unfinished = (
+            len(words) < SHORT_ANSWER_WORDS
+            or (bool(words) and words[-1] in TRAILING_WORDS)
+            or text.endswith((",", "-", "\u2026", "..."))
+        )
+        ms = (
+            self._settings.answer_end_extended_ms
+            if unfinished
+            else self._settings.answer_end_silence_ms
+        )
+        return ms / 1000.0
+
+    def _ensure_answer_watch(self) -> None:
+        if self._closed or not self._segments:
+            return
+        if self._answer_task is None or self._answer_task.done():
+            self._answer_task = asyncio.create_task(self._watch_answer_end())
+
+    def _cancel_answer_watch(self) -> None:
+        task = self._answer_task
+        self._answer_task = None
+        if task is not None and task is not asyncio.current_task() and not task.done():
+            task.cancel()
+
+    async def _watch_answer_end(self) -> None:
+        """
+        End the answer once the candidate has been silent long enough.
+
+        The deadline is measured from the last recognised word and re-read
+        every time it is reached, so speaking again simply pushes it out.
+        """
+        while not self._closed and self._segments:
+            remaining = self._last_speech_at + self.answer_wait_s() - time.monotonic()
+            if remaining > 0:
+                await asyncio.sleep(remaining)
+                continue
+            # Detach before emitting, so a result arriving mid-emit cannot
+            # cancel the task after the segments were taken and lose the answer.
+            if self._answer_task is asyncio.current_task():
+                self._answer_task = None
+            await self._emit_turn("timeout")
+            return
+
     async def _emit_turn(self, boundary: str) -> None:
         """
         Emit exactly one `final_transcript` for the accumulated segments.
@@ -405,6 +551,7 @@ class DeepgramStt:
         `UtteranceEnd` can both arrive for the same utterance, and the second
         one must not produce a second answer.
         """
+        self._cancel_answer_watch()
         async with self._emitting:
             if not self._segments:
                 return

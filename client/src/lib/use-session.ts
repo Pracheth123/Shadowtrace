@@ -66,11 +66,25 @@ export type Utterance = {
   persona: string | null;
 };
 
-/** A session always starts from a completed intake; the server holds the rest. */
+/**
+ * A session starts from a completed intake, or from a targeted practice record;
+ * the server holds the rest and derives everything else from stored data.
+ */
 export type SessionOptions = {
-  intakeId: string;
+  intakeId?: string;
+  practiceId?: string;
   lane: Lane;
   intensity: Intensity;
+  /** Affirmative consent given on this page (needed for intakes made before consent existed). */
+  consent?: boolean;
+};
+
+/** One line of the visible transcript: what was asked and what was recorded. */
+export type TranscriptLine = {
+  key: string;
+  speaker: "interviewer" | "you";
+  label: string;
+  text: string;
 };
 
 /** Server-reported progress. Core (spine) questions and follow-ups are separate. */
@@ -92,6 +106,21 @@ export type SessionProgress = {
 export type RoundNotice = { fromLabel: string; toLabel: string; carried: number; open: number };
 
 export type LogLine = { type: string; detail: string };
+
+/**
+ * Whose turn it is, as the room shows it (voice lane only).
+ *
+ *   interviewer — asking, or preparing the next question; the mic is held shut
+ *                 so stray speech or echo cannot become an answer;
+ *   countdown   — the question has finished playing; transcription starts in
+ *                 COUNTDOWN_S seconds, so the candidate knows exactly when;
+ *   listening   — the mic is open and the answer is being transcribed.
+ */
+export type Floor = "interviewer" | "countdown" | "listening";
+
+const COUNTDOWN_S = 5;
+/** If no next question arrives after an answer, reopen the mic rather than hang. */
+const NEXT_QUESTION_TIMEOUT_MS = 20000;
 
 export function useSession() {
   const [status, setStatus] = useState<SessionStatus>("idle");
@@ -115,6 +144,9 @@ export function useSession() {
   const [sessionId, setSessionId] = useState("");
   const [intensity, setIntensity] = useState<Intensity>("realistic");
   const [interviewer, setInterviewer] = useState("");
+  const [lines, setLines] = useState<TranscriptLine[]>([]);
+  const [isPractice, setIsPractice] = useState(false);
+  const [micError, setMicError] = useState("");
   const [voiceInfo, setVoiceInfo] = useState<{
     enabled: boolean;
     provider: string;
@@ -134,6 +166,66 @@ export function useSession() {
   // A WebSocket preserves send order, so this pairing is unambiguous.
   const pendingMetaRef = useRef<ChunkMeta | null>(null);
   const bargedRef = useRef(false);
+
+  // Turn-taking. The mic is shut while the interviewer has the floor and
+  // during the countdown; the candidate's own mute is kept separately so the
+  // floor never un-mutes someone who muted themselves.
+  const [floor, setFloor] = useState<Floor>("interviewer");
+  const [countdown, setCountdown] = useState(0);
+  const userMutedRef = useRef(false);
+  const gatedRef = useRef(true);
+  const countdownTimerRef = useRef<number | null>(null);
+  const nextQuestionTimerRef = useRef<number | null>(null);
+  const voiceEnabledRef = useRef(false);
+
+  const applyMute = useCallback(() => {
+    captureRef.current?.setMuted(userMutedRef.current || gatedRef.current);
+  }, []);
+
+  const clearFloorTimers = useCallback(() => {
+    if (countdownTimerRef.current != null) {
+      window.clearInterval(countdownTimerRef.current);
+      countdownTimerRef.current = null;
+    }
+    if (nextQuestionTimerRef.current != null) {
+      window.clearTimeout(nextQuestionTimerRef.current);
+      nextQuestionTimerRef.current = null;
+    }
+  }, []);
+
+  /** The candidate's turn: open the mic and transcribe. */
+  const openMic = useCallback(() => {
+    clearFloorTimers();
+    gatedRef.current = false;
+    applyMute();
+    setCountdown(0);
+    setFloor("listening");
+  }, [applyMute, clearFloorTimers]);
+
+  /** The interviewer's turn: hold the mic shut. */
+  const holdMic = useCallback(() => {
+    clearFloorTimers();
+    gatedRef.current = true;
+    applyMute();
+    setCountdown(0);
+    setFloor("interviewer");
+  }, [applyMute, clearFloorTimers]);
+
+  /** The question has finished playing: count down, then open the mic. */
+  const startCountdown = useCallback(() => {
+    if (endedRef.current || laneRef.current !== "voice") return;
+    clearFloorTimers();
+    gatedRef.current = true;
+    applyMute();
+    let left = COUNTDOWN_S;
+    setCountdown(left);
+    setFloor("countdown");
+    countdownTimerRef.current = window.setInterval(() => {
+      left -= 1;
+      if (left <= 0) openMic();
+      else setCountdown(left);
+    }, 1000);
+  }, [applyMute, clearFloorTimers, openMic]);
 
   const addLog = useCallback((type: string, detail: string) => {
     setLogs((previous) => [...previous.slice(-60), { type, detail }]);
@@ -161,10 +253,13 @@ export function useSession() {
           });
         },
         onError: (message) => addLogRef.current?.("playback_error", message),
+        // The countdown starts when the candidate has actually heard the
+        // whole question, not when the server finished sending it.
+        onDrained: () => startCountdown(),
       });
     }
     return playbackRef.current;
-  }, [send]);
+  }, [send, startCountdown]);
 
   const clearWaking = useCallback(() => {
     if (wakingTimerRef.current != null) {
@@ -259,6 +354,7 @@ export function useSession() {
             setLane(message.lane);
             laneRef.current = message.lane;
           }
+          voiceEnabledRef.current = Boolean(message.voice?.enabled);
           if (message.voice) {
             setVoiceInfo({
               enabled: Boolean(message.voice.enabled),
@@ -267,6 +363,7 @@ export function useSession() {
             });
           }
           if (message.degraded) addLog("degraded", String(message.degraded));
+          setIsPractice(Boolean(message.practice));
           setStatus(message.resumed ? "resumed" : "ready");
           setStatusDetail("");
           // The microphone opens only once the server has confirmed a voice
@@ -274,14 +371,20 @@ export function useSession() {
           if (laneRef.current === "voice" && !captureRef.current) {
             try {
               await beginCapture();
+              setMicError("");
             } catch (error) {
+              // Not a dead end: the session stays open, and the room offers
+              // "Try the microphone again" and "Continue by typing".
               const denied = error as MicrophoneDenied;
               addLog("mic_denied", denied.message);
-              setStatus("unreachable");
-              setStatusDetail(
-                `${denied.message} ${denied.recovery ?? ""}`.trim(),
-              );
+              setMicError(`${denied.message} ${denied.recovery ?? ""}`.trim());
             }
+          }
+          if (laneRef.current === "voice") {
+            // A resumed session re-shows the question without replaying it,
+            // so there is nothing to count down from: it is the candidate's turn.
+            if (message.resumed) openMic();
+            else applyMute();
           }
           return;
         }
@@ -309,6 +412,7 @@ export function useSession() {
         if (message.type === "lane_changed") {
           setLane(message.lane);
           laneRef.current = message.lane;
+          clearFloorTimers();
           setVoiceProblem("");
           playbackRef.current?.stopAll();
           void endCapture();
@@ -318,6 +422,27 @@ export function useSession() {
         if (message.type === "turn_end") {
           setTurnCount((count) => count + 1);
           setInterim("");
+          if (laneRef.current === "voice") {
+            // The answer is recorded. Hold the mic while the interviewer
+            // prepares the next question, so more speech does not become a
+            // second, fragmentary answer. Never hang if no question comes.
+            holdMic();
+            nextQuestionTimerRef.current = window.setTimeout(
+              openMic,
+              NEXT_QUESTION_TIMEOUT_MS,
+            );
+          }
+          if (message.text) {
+            setLines((previous) => [
+              ...previous,
+              {
+                key: `you-${String(message.turn_id ?? previous.length)}`,
+                speaker: "you",
+                label: "You",
+                text: String(message.text),
+              },
+            ]);
+          }
           return;
         }
 
@@ -339,6 +464,7 @@ export function useSession() {
         }
 
         if (message.type === "utterance_begin") {
+          holdMic();
           bargedRef.current = false;
           utteranceIdRef.current = String(message.utterance_id ?? "");
           playback().beginUtterance(utteranceIdRef.current);
@@ -364,6 +490,9 @@ export function useSession() {
           // choose to continue by typing. Nothing is substituted silently.
           addLog("voice_error", String(message.detail ?? message.reason ?? ""));
           setVoiceProblem(String(message.detail ?? "Voice is unavailable."));
+          // A line that could not be spoken never drains, so start the
+          // countdown here or the mic would stay shut.
+          if (message.reason === "synthesis_failed") startCountdown();
           return;
         }
 
@@ -376,6 +505,25 @@ export function useSession() {
           message.type === "caption" ||
           message.type === "agent_utterance_start"
         ) {
+          if (message.type === "agent_utterance_start" && laneRef.current === "voice") {
+            holdMic();
+          }
+          if (message.type === "agent_utterance_start" && message.text) {
+            const id = String(message.utterance_id ?? "");
+            setLines((previous) =>
+              previous.some((line) => line.key === `agent-${id}`)
+                ? previous
+                : [
+                    ...previous,
+                    {
+                      key: `agent-${id}`,
+                      speaker: "interviewer",
+                      label: String(message.speaker_label ?? message.persona ?? "Interviewer"),
+                      text: String(message.text),
+                    },
+                  ],
+            );
+          }
           if (message.text) {
             setUtterance({
               utteranceId: message.utterance_id ?? "",
@@ -391,12 +539,15 @@ export function useSession() {
         if (message.type === "agent_utterance_end") {
           // Acknowledgements are driven by the playback queue's audio clock,
           // not by this event: the server finishing a line says nothing about
-          // whether the candidate has heard it yet.
+          // whether the candidate has heard it yet. Only without a voice
+          // provider (no audio to drain) does this start the countdown.
+          if (!voiceEnabledRef.current) startCountdown();
           return;
         }
 
         if (message.type === "session_complete") {
           endedRef.current = true;
+          clearFloorTimers();
           if (message.session_id) setSessionId(String(message.session_id));
           playbackRef.current?.stopAll();
           void endCapture();
@@ -435,12 +586,27 @@ export function useSession() {
         if (socket.readyState !== WebSocket.OPEN) setStatus("waking");
       };
     },
-    [addLog, beginCapture, clearWaking, endCapture, playback, send],
+    [
+      addLog,
+      applyMute,
+      beginCapture,
+      clearFloorTimers,
+      clearWaking,
+      endCapture,
+      holdMic,
+      openMic,
+      playback,
+      send,
+      startCountdown,
+    ],
   );
 
   const start = useCallback(
     async (options: SessionOptions) => {
       setLogs([]);
+      setLines([]);
+      setMicError("");
+      setIsPractice(Boolean(options.practiceId));
       setProgress(null);
       setRoundNotice(null);
       setProviderWarning("");
@@ -458,6 +624,11 @@ export function useSession() {
       laneRef.current = options.lane;
       setInterim("");
       setMuted(false);
+      clearFloorTimers();
+      userMutedRef.current = false;
+      gatedRef.current = true;
+      setFloor("interviewer");
+      setCountdown(0);
       bargedRef.current = false;
       setRunning(true);
       if (options.lane === "voice") {
@@ -470,12 +641,28 @@ export function useSession() {
       attach(new WebSocket(WS_URL), {
         type: "session_start",
         auth_token: authToken,
-        intake_id: options.intakeId,
+        ...(options.practiceId
+          ? { practice_id: options.practiceId }
+          : { intake_id: options.intakeId }),
         lane: options.lane,
+        consent: Boolean(options.consent),
       });
     },
-    [attach, playback],
+    [attach, clearFloorTimers, playback],
   );
+
+  /** Try the microphone again after a permission or device error. */
+  const retryMic = useCallback(async () => {
+    if (laneRef.current !== "voice" || captureRef.current) return;
+    try {
+      await beginCapture();
+      applyMute();
+      setMicError("");
+    } catch (error) {
+      const denied = error as MicrophoneDenied;
+      setMicError(`${denied.message} ${denied.recovery ?? ""}`.trim());
+    }
+  }, [applyMute, beginCapture]);
 
   /** The explicit text fallback after a voice problem. */
   const switchToText = useCallback(() => {
@@ -484,11 +671,17 @@ export function useSession() {
 
   const end = useCallback(() => {
     endedRef.current = true;
+    clearFloorTimers();
     send({ type: "session_end" });
     playbackRef.current?.stopAll();
     void endCapture();
     setRunning(false);
-  }, [endCapture, send]);
+  }, [clearFloorTimers, endCapture, send]);
+
+  /** "Done answering": close the answer now instead of waiting for silence. */
+  const finishAnswer = useCallback(() => {
+    send({ type: "answer_done" });
+  }, [send]);
 
   const bargeIn = useCallback(
     (held?: boolean) => {
@@ -508,8 +701,10 @@ export function useSession() {
         held: pushToTalk ? held : undefined,
       });
       addLog("barge_in", `stopped playback at ${audible} ms audible`);
+      // Interrupting means the candidate wants to talk now: no countdown.
+      openMic();
     },
-    [addLog, pushToTalk, send],
+    [addLog, openMic, pushToTalk, send],
   );
 
   const togglePushToTalk = useCallback(() => {
@@ -518,32 +713,37 @@ export function useSession() {
       send({ type: "push_to_talk", on: next });
       // Turning push-to-talk on mutes the stream until the key is held, so the
       // button controls what actually leaves the machine.
-      captureRef.current?.setMuted(next);
+      userMutedRef.current = next;
+      applyMute();
       setMuted(next);
       return next;
     });
-  }, [send]);
+  }, [applyMute, send]);
 
   /** Hold-to-talk: unmute while held, re-mute on release and close the turn. */
   const setTalking = useCallback(
     (talking: boolean) => {
       if (!pushToTalk) return;
-      captureRef.current?.setMuted(!talking);
+      // Holding the key is an explicit "my turn", so it skips the countdown.
+      if (talking && gatedRef.current) openMic();
+      userMutedRef.current = !talking;
+      applyMute();
       setMuted(!talking);
       send({ type: "mute", muted: !talking });
       if (!talking) send({ type: "answer_done" });
     },
-    [pushToTalk, send],
+    [applyMute, openMic, pushToTalk, send],
   );
 
   const toggleMute = useCallback(() => {
     setMuted((on) => {
       const next = !on;
-      captureRef.current?.setMuted(next);
+      userMutedRef.current = next;
+      applyMute();
       send({ type: "mute", muted: next });
       return next;
     });
-  }, [send]);
+  }, [applyMute, send]);
 
   const answer = useCallback(
     (text: string) => {
@@ -560,6 +760,7 @@ export function useSession() {
   useEffect(
     () => () => {
       clearWaking();
+      clearFloorTimers();
       endedRef.current = true;
       wsRef.current?.close();
       // Release the microphone track, the worklet and both audio contexts.
@@ -570,7 +771,7 @@ export function useSession() {
       captureRef.current = null;
       playbackRef.current = null;
     },
-    [clearWaking],
+    [clearFloorTimers, clearWaking],
   );
 
   return {
@@ -595,6 +796,10 @@ export function useSession() {
     sessionId,
     intensity,
     interviewer,
+    lines,
+    isPractice,
+    micError,
+    retryMic,
     captureSupported: isCaptureSupported(),
     start,
     switchToText,
@@ -604,6 +809,11 @@ export function useSession() {
     setTalking,
     toggleMute,
     answer,
+    // Turn-taking surface.
+    floor,
+    countdown,
+    startNow: openMic,
+    finishAnswer,
   };
 }
 

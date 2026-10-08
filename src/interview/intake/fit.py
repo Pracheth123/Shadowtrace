@@ -95,9 +95,12 @@ def fit_check(
         missing.extend(resolved["missing"])
         unsure = still
     score = round(100 * len(matched) / len(required)) if required else 0
+    # Document overlap, not ability: a term absent from what the candidate
+    # supplied says nothing about whether they have the skill.
     summary = (
-        f"{len(matched)} of {len(required)} required skills overlap. "
-        f"{len(missing)} missing. {len(unsure)} unsure."
+        f"{len(matched)} of {len(required)} job-description terms also appear in "
+        f"your documents; {len(missing)} do not appear in what you supplied; "
+        f"{len(unsure)} unclear. This is document overlap, not a measure of ability."
     )
     return FitGap(
         required=required,

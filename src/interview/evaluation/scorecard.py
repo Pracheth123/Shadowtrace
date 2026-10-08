@@ -11,6 +11,15 @@ from __future__ import annotations
 from html import escape
 
 
+# Display labels for stored claim statuses (report.v3 adapter; also applied to
+# older reports, which store only the raw value).
+_CLAIM_LABEL = {
+    "held": "Explained in this session",
+    "collapsed": "Needs clarification",
+    "untested": "Not explored",
+}
+
+
 def _pct(value) -> str:
     return "not scored" if value is None else f"{round(float(value) * 100)}/100"
 
@@ -66,22 +75,31 @@ def render_scorecard(report: dict) -> str:
         add("</table>")
         add(f"<p class='muted'>{escape(result['aggregate'].get('note', ''))}</p>")
         for finding in result.get("findings", []):
+            question = (
+                f"<p class='muted'>Question: {escape(finding['question'])}</p>"
+                if finding.get("question")
+                else ""
+            )
             add(f"<p><strong>{'Strength' if finding['polarity'] == 'strength' else 'Gap'} — "
                 f"{escape(finding['dimension_label'])}</strong> ({escape(finding['confidence'])} "
-                f"confidence): {escape(finding['explanation'])}</p>"
-                f"<blockquote>{escape(finding['quote'])} <span class='muted'>({escape(finding['turn_id'])})</span></blockquote>"
-                f"<p class='muted'>Practice: {escape(finding.get('practice', ''))}</p>")
+                f"confidence): {escape(finding['explanation'])}</p>{question}"
+                f"<blockquote>{escape(finding['quote'])} <span class='muted'>({escape(finding['turn_id'])}; "
+                "quote found in your answer — that does not by itself confirm the judgement)</span></blockquote>"
+                f"<p class='muted'>Practice: {escape(finding.get('practice', ''))}</p>"
+                + (f"<p class='muted'>Limitation: {escape(finding['limitation'])}</p>" if finding.get("limitation") else ""))
 
-    add("<h2>Claim findings</h2>")
-    add("<p class='muted'>How each claim from your background fared under questioning in "
-        "this session. Not lie detection and not authorship verification.</p>")
+    add("<h2>Statements from your background</h2>")
+    add("<p class='muted'>How each statement came across under questioning in this session. "
+        "Repository material shows content exists, not who wrote it, and an unclear "
+        "answer does not establish dishonesty. Not lie detection.</p>")
     add("<table><tr><th>Claim</th><th>Status</th><th>Why</th></tr>")
     for claim in report.get("claims", []):
         quote = (
             f"<blockquote>{escape(claim['quote'])}</blockquote>" if claim.get("quote") else ""
         )
         add(f"<tr><td>{escape(claim['text'])}<div class='muted'>{escape(claim['evidence_kind'])}</div></td>"
-            f"<td>{escape(claim['status'])}</td><td>{escape(claim['reason'])}{quote}</td></tr>")
+            f"<td>{escape(claim.get('status_label') or _CLAIM_LABEL.get(claim['status'], claim['status']))}</td>"
+            f"<td>{escape(claim['reason'])}{quote}</td></tr>")
     add("</table>")
 
     if report.get("disagreements"):
@@ -89,7 +107,7 @@ def render_scorecard(report: dict) -> str:
         for item in report["disagreements"]:
             add(f"<p><strong>{escape(item['subject'])}</strong> — {escape(item['summary'])}</p><ul>")
             for pos in item["positions"]:
-                add(f"<li>{escape(pos['perspective'])}: {escape(pos['status'])} — {escape(pos['reason'])}"
+                add(f"<li>{escape(pos['perspective'])}: {escape(_CLAIM_LABEL.get(pos['status'], pos['status']))} — {escape(pos['reason'])}"
                     f"{' <blockquote>' + escape(pos['quote']) + '</blockquote>' if pos.get('quote') else ''}</li>")
             add("</ul>")
 

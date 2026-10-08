@@ -1,5 +1,5 @@
-import { lazy, Suspense, useState } from "react";
-import { SendIcon, SquareIcon, VideoIcon, VideoOffIcon } from "lucide-react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { MicIcon, SendIcon, SquareIcon, VideoIcon, VideoOffIcon } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -35,17 +35,57 @@ export type InterviewRoomProps = {
   onFinished: (sessionId: string) => void;
 };
 
+/** True when a key press is aimed at a text field, so shortcuts stay out of the way. */
+function typingInField(event: KeyboardEvent): boolean {
+  const target = event.target as HTMLElement | null;
+  if (!target) return false;
+  const tag = target.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || target.isContentEditable;
+}
+
 export function InterviewRoom({ session, onFinished }: InterviewRoomProps) {
   const [typed, setTyped] = useState("");
   const [videoOn, setVideoOn] = useState(false);
   const [videoStream, setVideoStream] = useState<MediaStream | null>(null);
   const [talking, setTalking] = useState(false);
+  const [showTranscript, setShowTranscript] = useState(true);
+  const answerRef = useRef<HTMLInputElement | null>(null);
+  const transcriptEnd = useRef<HTMLDivElement | null>(null);
 
   const { text: statusText, tone } = statusMessage(
     session.status,
     session.statusDetail,
   );
   const progress = session.progress;
+
+  // Keyboard controls. Esc interrupts the interviewer, M mutes, T switches to
+  // typing, / focuses the answer box. Ignored while typing in a field (except
+  // Esc), so they never swallow an answer.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (!session.running) return;
+      if (event.key === "Escape" && session.lane === "voice") {
+        event.preventDefault();
+        session.bargeIn(talking);
+        return;
+      }
+      if (typingInField(event) || event.ctrlKey || event.metaKey || event.altKey) return;
+      if (event.key === "m" || event.key === "M") {
+        if (session.lane === "voice") session.toggleMute();
+      } else if (event.key === "t" || event.key === "T") {
+        if (session.lane === "voice") session.switchToText();
+      } else if (event.key === "/") {
+        event.preventDefault();
+        answerRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [session, talking]);
+
+  useEffect(() => {
+    transcriptEnd.current?.scrollIntoView({ block: "nearest" });
+  }, [session.lines.length, session.interim]);
 
   // Local preview only. The stream is attached to a <video> element and
   // nothing else: no frame is encoded, sent to the server, or stored. Video is
@@ -82,13 +122,15 @@ export function InterviewRoom({ session, onFinished }: InterviewRoomProps) {
     onFinished(session.sessionId);
   };
 
+  const voiceTrouble = session.lane === "voice" && (session.voiceProblem || session.micError);
+
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-5">
       <header className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <h2 className="text-xl">Interview in progress</h2>
+        <div className="flex flex-wrap items-center gap-2">
+          <h2 className="text-xl">{session.isPractice ? "Targeted practice" : "Interview in progress"}</h2>
           <Badge variant={session.lane === "text" ? "muted" : "secondary"}>
-            {session.lane === "text" ? "text lane" : "voice"}
+            {session.lane === "text" ? "typing" : "voice"}
           </Badge>
           {session.lane === "voice" &&
             session.voiceInfo &&
@@ -102,7 +144,7 @@ export function InterviewRoom({ session, onFinished }: InterviewRoomProps) {
               variant="outline"
               title="No interviewer model is configured; questions come from the interview plan"
             >
-              development interviewer
+              plan-based interviewer (no AI model)
             </Badge>
           )}
           <Badge variant="muted">
@@ -146,7 +188,8 @@ export function InterviewRoom({ session, onFinished }: InterviewRoomProps) {
               : ""}
             : core question {progress.core_asked} of {progress.core_total} ·{" "}
             {progress.follow_ups} follow-up{progress.follow_ups === 1 ? "" : "s"} ·{" "}
-            {progress.answers} answer{progress.answers === 1 ? "" : "s"} so far
+            {progress.answers} answer{progress.answers === 1 ? "" : "s"} so far · about{" "}
+            {Math.max(0, Math.round(progress.round_seconds_remaining / 60))} min left in this round
           </p>
         </div>
       ) : (
@@ -170,9 +213,16 @@ export function InterviewRoom({ session, onFinished }: InterviewRoomProps) {
         </p>
       )}
 
-      {session.voiceProblem && session.lane === "voice" && (
+      {voiceTrouble && (
         <div role="alert" className="flex flex-wrap items-center gap-3 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          <p className="flex-1">Voice problem: {session.voiceProblem}</p>
+          <p className="flex-1">
+            {session.micError ? `Microphone problem: ${session.micError}` : `Voice problem: ${session.voiceProblem}`}
+          </p>
+          {session.micError && (
+            <Button variant="outline" size="sm" onClick={() => void session.retryMic()}>
+              <MicIcon /> Try the microphone again
+            </Button>
+          )}
           <Button variant="outline" size="sm" onClick={session.switchToText}>
             Continue by typing
           </Button>
@@ -181,36 +231,103 @@ export function InterviewRoom({ session, onFinished }: InterviewRoomProps) {
 
       {session.status === "complete" && (
         <div className="flex items-center gap-3 rounded-md bg-muted px-3 py-2 text-sm">
-          <p className="flex-1">The interview has finished. Your feedback is being prepared.</p>
+          <p className="flex-1">
+            {session.isPractice
+              ? "The practice attempt has finished. Its feedback is being prepared."
+              : "The interview has finished. Your feedback is being prepared."}
+          </p>
           <Button size="sm" onClick={() => onFinished(session.sessionId)}>
             See your feedback
           </Button>
         </div>
       )}
 
-      {/* The question the interviewer is asking. In panel mode the speaker
-          label names which voice holds the floor. */}
+      {/* The question the interviewer is asking. */}
       <Card>
         <CardPanel className="pt-5">
           <span className="mb-1.5 block text-xs uppercase tracking-wide text-muted-foreground">
             {session.utterance?.speaker ?? "Interviewer"}
           </span>
-          <p className="min-h-[3.5rem] text-base leading-relaxed">
+          <p className="min-h-[3.5rem] text-base leading-relaxed" aria-live="polite">
             {session.utterance?.text ??
               "Waiting for the interviewer to open the session…"}
           </p>
         </CardPanel>
       </Card>
 
-      {/* What the candidate is saying right now, straight from interim STT. */}
-      {session.lane === "voice" && (session.interim || session.micActive) && (
-        <div className="rounded-lg border border-dashed border-input px-4 py-3">
-          <span className="mb-1 block text-xs uppercase tracking-wide text-muted-foreground">
-            You
-          </span>
-          <p className="min-h-[1.5rem] text-sm text-muted-foreground">
-            {session.interim || "Listening…"}
-          </p>
+      {/* Whose turn it is, and what the candidate is saying right now. */}
+      {session.lane === "voice" && session.running && session.micActive && (
+        <div
+          className={cn(
+            "rounded-lg border px-4 py-3",
+            session.floor === "listening"
+              ? "border-primary/60 bg-primary/5"
+              : "border-dashed border-input",
+          )}
+          aria-live="polite"
+        >
+          {session.floor === "interviewer" && (
+            <p className="text-sm text-muted-foreground">
+              The interviewer is speaking. Your microphone is off until the question finishes.
+            </p>
+          )}
+
+          {session.floor === "countdown" && (
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-medium">
+                  Transcript starts in{" "}
+                  <span className="tabular-nums text-primary">{session.countdown}</span>…
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Take a moment to gather your thoughts.
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                {[5, 4, 3, 2, 1].map((n) => (
+                  <span
+                    key={n}
+                    className={cn(
+                      "flex h-7 w-7 items-center justify-center rounded-full border text-xs tabular-nums",
+                      n === session.countdown
+                        ? "border-primary bg-primary text-primary-foreground"
+                        : n > session.countdown
+                          ? "border-border text-muted-foreground/50"
+                          : "border-border text-muted-foreground",
+                    )}
+                  >
+                    {n}
+                  </span>
+                ))}
+                <Button variant="outline" size="sm" onClick={session.startNow}>
+                  Start now
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {session.floor === "listening" && (
+            <>
+              <div className="mb-1 flex items-center justify-between gap-3">
+                <span className="flex items-center gap-2 text-xs uppercase tracking-wide text-primary">
+                  <span className="h-2 w-2 animate-pulse rounded-full bg-primary" />
+                  {session.muted ? "Muted" : "Listening — you"}
+                </span>
+                <Button size="sm" onClick={session.finishAnswer} disabled={!session.interim}>
+                  Done answering
+                </Button>
+              </div>
+              <p className="min-h-[1.5rem] text-sm">
+                {session.interim || (
+                  <span className="text-muted-foreground">Start speaking whenever you're ready…</span>
+                )}
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Pausing to think is fine. Your answer ends after a few seconds of silence, or
+                when you press Done answering.
+              </p>
+            </>
+          )}
         </div>
       )}
 
@@ -242,6 +359,7 @@ export function InterviewRoom({ session, onFinished }: InterviewRoomProps) {
             <div className="flex gap-2">
               <Input
                 id="typed-answer"
+                ref={answerRef}
                 value={typed}
                 placeholder="Type your answer, then press Enter"
                 disabled={!session.running}
@@ -273,8 +391,9 @@ export function InterviewRoom({ session, onFinished }: InterviewRoomProps) {
               className="border border-border"
               disabled={!session.running}
               onClick={() => session.bargeIn(talking)}
+              title="Interrupt the interviewer (Esc)"
             >
-              Interrupt
+              Interrupt <kbd className="ml-1 text-xs text-muted-foreground">Esc</kbd>
             </Button>
             <Button
               variant={session.pushToTalk ? "secondary" : "ghost"}
@@ -304,10 +423,32 @@ export function InterviewRoom({ session, onFinished }: InterviewRoomProps) {
                   setTalking(false);
                   session.setTalking(false);
                 }}
+                onKeyDown={(event) => {
+                  if (event.key === " " && !talking) {
+                    event.preventDefault();
+                    setTalking(true);
+                    session.setTalking(true);
+                  }
+                }}
+                onKeyUp={(event) => {
+                  if (event.key === " ") {
+                    setTalking(false);
+                    session.setTalking(false);
+                  }
+                }}
               >
-                {talking ? "Listening…" : "Hold to talk"}
+                {talking ? "Listening…" : "Hold to talk (or hold Space)"}
               </Button>
             )}
+            <Button
+              variant="ghost"
+              className="border border-border"
+              disabled={!session.running}
+              onClick={session.switchToText}
+              title="Switch to typing (T)"
+            >
+              Switch to typing <kbd className="ml-1 text-xs text-muted-foreground">T</kbd>
+            </Button>
           </>
         )}
 
@@ -330,6 +471,51 @@ export function InterviewRoom({ session, onFinished }: InterviewRoomProps) {
           {session.status === "complete" ? "Leave" : "End interview"}
         </Button>
       </div>
+
+      <p className="text-xs text-muted-foreground">
+        Keys: <kbd>Esc</kbd> interrupt · <kbd>M</kbd> mute · <kbd>T</kbd> switch to typing ·{" "}
+        <kbd>/</kbd> focus the answer box · <kbd>Enter</kbd> send a typed answer.
+      </p>
+
+      <Card>
+        <CardPanel className="pt-4">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-medium">Transcript so far</h3>
+            <Button variant="ghost" size="sm" onClick={() => setShowTranscript((on) => !on)} aria-expanded={showTranscript}>
+              {showTranscript ? "Hide" : "Show"}
+            </Button>
+          </div>
+          {showTranscript && (
+            <div className="mt-2 flex max-h-72 flex-col gap-2 overflow-y-auto text-sm" aria-live="polite">
+              {session.lines.length === 0 && !session.interim ? (
+                <p className="text-muted-foreground">Nothing yet.</p>
+              ) : (
+                session.lines.map((line) => (
+                  <p key={line.key}>
+                    <span className={cn("font-medium", line.speaker === "you" ? "text-primary" : "")}>
+                      {line.label}:
+                    </span>{" "}
+                    {line.text}
+                  </p>
+                ))
+              )}
+              {/* The answer in progress, phrase by phrase as it is recognised.
+                  Replaced by the recorded line when the answer is accepted. */}
+              {session.interim && (
+                <p className="italic text-muted-foreground">
+                  <span className="font-medium not-italic text-primary">You (speaking):</span>{" "}
+                  {session.interim}
+                </p>
+              )}
+              <div ref={transcriptEnd} />
+              <p className="text-xs text-muted-foreground">
+                Your lines are exactly what was recorded for feedback. If you interrupt
+                the interviewer, the saved transcript keeps only what you heard.
+              </p>
+            </div>
+          )}
+        </CardPanel>
+      </Card>
 
       {videoOn && (
         <div className="flex items-start gap-3">

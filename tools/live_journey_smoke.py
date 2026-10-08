@@ -38,6 +38,16 @@ I reduced reconciliation mismatches from about 2 percent to under 0.1 percent ov
 Tech: Python, Kafka, PostgreSQL
 """
 
+# A second, more specific attempt for the stage-16 practice step.
+PRACTICE_ANSWERS = [
+    "I chose PostgreSQL over DynamoDB myself, because transfers between accounts needed "
+    "transactional consistency and I did not want us to build our own two-phase updates. "
+    "I verified it by replaying a month of settlements against both prototypes: zero mismatches "
+    "on Postgres, eleven on the DynamoDB prototype.",
+    "The strongest alternative was DynamoDB with conditional writes; I rejected it because a "
+    "partial failure mid-transfer would have left balances inconsistent until a repair job ran.",
+]
+
 ANSWERS = [
     "I've spent five years on payments infrastructure. I moved from a generalist backend role into payments "
     "because I wanted to own systems where correctness is measurable, and I'm now looking for a senior role "
@@ -95,6 +105,7 @@ def main() -> int:
                 "lane": "text",
                 "intensity": "realistic",
                 "job_description": "Required skills\nPython, Kafka, Kubernetes, PostgreSQL",
+                "consent": "1",
             },
             files={"resume": ("priya.txt", RESUME.encode(), "text/plain")},
             headers=headers,
@@ -175,6 +186,44 @@ def main() -> int:
         for claim in report["claims"]:
             print(f"  {claim['status']:<9} {claim['text'][:80]} | {claim['reason'][:100]}")
         print("\nlimitations:", *report["limitations"], sep="\n  ")
+        evidence["timings"] = (meta.get("evaluation") or {}).get("timings") if isinstance(meta.get("evaluation"), dict) else None
+        evidence["evaluation_job"] = client.get(f"/api/sessions/{session_id}/evaluation", headers=headers).json()
+
+        # Stage 16: practise the top gap through the live runtime and compare.
+        gaps = [f for r in report["rounds"] for f in r["findings"] if f["polarity"] == "gap" and f.get("eligible_for_practice")]
+        if not gaps:
+            print("\nno practisable gap in this report; practice step skipped")
+        else:
+            gap = sorted(gaps, key=lambda f: f.get("priority") or 99)[0]
+            practice = client.post(
+                "/api/practice",
+                json={"session_id": session_id, "finding_id": gap["finding_id"], "minutes": 3},
+                headers=headers,
+            ).json()
+            pid = practice["practice_id"]
+            client.post(f"/api/practice/{pid}/coaching", headers=headers)
+            print(f"\npractice on {practice['dimension_label']}; checklist items: {len(practice['checklist'])}")
+            with client.websocket_connect("/ws/session") as ws:
+                ws.send_text(json.dumps({"type": "session_start", "auth_token": token, "practice_id": pid, "lane": "text"}))
+                attempt = read_until(ws, {"session_ready", "session_rejected"})
+                read_until(ws, {"agent_utterance_end"})
+                for answer in PRACTICE_ANSWERS:
+                    print(f"\n[candidate] {answer}")
+                    ws.send_text(json.dumps({"type": "candidate_text", "text": answer}))
+                    last = read_until(ws, {"agent_utterance_end", "session_complete"})
+                    if last and last["type"] == "session_complete":
+                        break
+                else:
+                    ws.send_text(json.dumps({"type": "session_end"}))
+                    read_until(ws, {"session_complete"})
+            for _ in range(240):
+                view = client.get(f"/api/practice/{pid}", headers=headers).json()
+                if view["comparisons"] and view["comparisons"][-1]["outcome"] != "pending":
+                    break
+                time.sleep(1.0)
+            evidence["practice"] = view
+            cmp = view["comparisons"][-1] if view["comparisons"] else {}
+            print("practice outcome:", cmp.get("outcome_label"), "|", cmp.get("reason"))
     (out / "evidence.json").write_text(json.dumps(evidence, indent=2), encoding="utf-8")
     print(f"\nevidence written to {out / 'evidence.json'}")
     return 0

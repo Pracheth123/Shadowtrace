@@ -148,10 +148,10 @@ def results(transcript, *, is_final=False, speech_final=False, start=0.0,
 
 
 @asynccontextmanager
-async def voice_session(url, bus=None, **kwargs):
+async def voice_session(url, bus=None, config=None, **kwargs):
     wire = Wire()
     session = VoiceSession(
-        bus or EventBus(), "s-14", settings(), wire.send_text, wire.send_bytes,
+        bus or EventBus(), "s-14", config or settings(), wire.send_text, wire.send_bytes,
         stt_url_override=f"{url}/listen",
         tts_url_override=f"{url}/speak",
         **kwargs,
@@ -270,11 +270,13 @@ async def test_one_committed_answer_from_many_segments() -> None:
     events: list = []
     bus.subscribe_all(lambda event: events.append(event))
     async with fake_deepgram(listen_script=script) as (fake, url):
-        async with voice_session(url, bus=bus, get_turn_id=lambda: "t-1") as (
-            session, wire,
-        ):
+        # Shortest allowed answer-end silence, so the answer closes quickly.
+        fast = settings(ANSWER_END_SILENCE_MS=500, ANSWER_END_EXTENDED_MS=500)
+        async with voice_session(
+            url, bus=bus, config=fast, get_turn_id=lambda: "t-1"
+        ) as (session, wire):
             await session.start(source_sample_rate=16000)
-            await asyncio.sleep(0.4)
+            await asyncio.sleep(0.9)
             await bus.drain()
 
     finals = [e for e in events if e.type == "final_transcript"]
@@ -283,7 +285,8 @@ async def test_one_committed_answer_from_many_segments() -> None:
         "I increased sales by changing our outreach to budget holders"
     )
     assert finals[0].turn_id == "t-1"
-    assert finals[0].boundary == "speech_final"
+    # Provider pauses only start the silence clock; silence ends the answer.
+    assert finals[0].boundary == "timeout"
     assert len(finals[0].word_timings) == 6
     partials = [e for e in events if e.type == "partial"]
     assert partials, "interim transcripts must reach the browser"

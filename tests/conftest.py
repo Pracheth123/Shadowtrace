@@ -23,6 +23,11 @@ _OFFLINE_ENV = {
     "MODEL_ROADMAP": "openai/gpt-oss-120b",
     "MODEL_FALLBACK_FAST": "qwen/qwen3.8-27b",
     "MODEL_FALLBACK_QUALITY": "qwen/qwen3.8-27b",
+    # The developer's .env may set MOCK_LLM=0 with ALLOW_MOCK_PROVIDERS=0;
+    # offline tests always run the labelled deterministic/mock providers.
+    "MOCK_LLM": "1",
+    # Never sweep anything during tests; retention tests call the sweep directly.
+    "GUEST_RETENTION_DAYS": "0",
 }
 
 

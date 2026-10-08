@@ -19,6 +19,10 @@ class RpmLimiter:
         self._times: deque[float] = deque()
         self._lock = asyncio.Lock()
 
+    @property
+    def rpm(self) -> int:
+        return self._rpm
+
     async def acquire(self) -> None:
         async with self._lock:
             while True:

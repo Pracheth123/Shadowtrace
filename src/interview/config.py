@@ -19,6 +19,16 @@ module exists to enforce:
    The retired-model list is explicit, because a fallback that 404s is worse
    than no fallback — it burns the retry budget and still fails.
 
+Precedence (stage 16, documented in README and .env.example): a variable set in
+the **process environment** wins; otherwise the value in **`.env`**; otherwise
+the **default** below. `config/inference.yaml` no longer carries any value that
+also exists here — it only holds generation defaults and the TTS vendor, so it
+cannot silently override `GROQ_*` or `MAX_MODEL_CALLS_PER_TURN`.
+
+Retry vocabulary, used consistently: `GROQ_MAX_RETRIES` is the number of
+*retries* after the first attempt (total attempts per model = retries + 1). The
+OpenAI SDK's own retries are switched off so there is exactly one retry layer.
+
 Verified against provider documentation on 2026-10-04 (see
 docs/decisions/stage12_voice_providers.md for the fetch log):
 
@@ -103,6 +113,10 @@ class Settings(BaseSettings):
     # Fake STT/LLM/TTS are first-class in this repo and must stay usable in
     # dev and test. In prod they are a correctness hazard, not a convenience.
     allow_mock_providers: bool = Field(default=True, alias="ALLOW_MOCK_PROVIDERS")
+    # Force the deterministic interviewer and the mock evaluator even when a
+    # Groq key is present (tests, offline demos). Unset = follow the key.
+    # Requires ALLOW_MOCK_PROVIDERS; refused in production.
+    mock_llm: bool | None = Field(default=None, alias="MOCK_LLM")
 
     data_dir: Path = Field(default=Path("data"), alias="DATA_DIR")
     allowed_origins_raw: str = Field(
@@ -110,6 +124,16 @@ class Settings(BaseSettings):
         alias="ALLOWED_ORIGINS",
     )
     max_session_seconds: int = Field(default=900, ge=60, alias="MAX_SESSION_SECONDS")
+    max_live_sessions: int = Field(default=8, ge=1, le=200, alias="MAX_LIVE_SESSIONS")
+    intake_rph: int = Field(default=10, ge=1, le=1000, alias="INTAKE_RPH")
+    resume_ttl_s: float = Field(default=180.0, ge=5.0, le=3600.0, alias="RESUME_TTL_S")
+
+    # Retention of guest data. A guest inactive for this many days is deleted
+    # by the background sweep (0 disables it). Disclosed before any upload.
+    guest_retention_days: int = Field(default=30, ge=0, le=3650, alias="GUEST_RETENTION_DAYS")
+    retention_sweep_interval_s: float = Field(
+        default=3600.0, ge=10.0, alias="RETENTION_SWEEP_INTERVAL_S"
+    )
 
     # ------------------------------------------------------------------
     # Groq — interviewer, indexer, evaluator, roadmap
@@ -139,11 +163,45 @@ class Settings(BaseSettings):
     model_fallback_quality: str = Field(
         default="qwen/qwen3.8-27b", alias="MODEL_FALLBACK_QUALITY"
     )
+    # Client-side cap shared by every role on one key. Keep it at or below the
+    # account's real limit: raising it does not make the provider faster, it
+    # only turns client-side waiting into provider 429s.
     groq_requests_per_minute: int = Field(
         default=30, ge=1, alias="GROQ_REQUESTS_PER_MINUTE"
     )
+    # Retries AFTER the first attempt, per model, for retryable failures only
+    # (429, 408, 5xx, timeout, connection). Total attempts = this + 1.
     groq_max_retries: int = Field(default=3, ge=0, le=8, alias="GROQ_MAX_RETRIES")
+    # Per HTTP request timeout for live (interviewer) calls.
     groq_timeout_s: float = Field(default=12.0, gt=0, alias="GROQ_TIMEOUT_S")
+    # Per HTTP request timeout for evaluator calls, which return thousands of
+    # tokens of JSON and legitimately take longer than a live turn.
+    groq_eval_timeout_s: float = Field(default=60.0, gt=0, alias="GROQ_EVAL_TIMEOUT_S")
+    # Overall deadline for one live interviewer decision: retries, limiter wait
+    # and the fallback hop must all fit inside it. When it is spent the role's
+    # deterministic proposer asks the next question and the candidate is told.
+    live_model_deadline_s: float = Field(
+        default=10.0, gt=0, le=60.0, alias="LIVE_MODEL_DEADLINE_S"
+    )
+
+    # ------------------------------------------------------------------
+    # Evaluation job budget
+    # ------------------------------------------------------------------
+    # Repair attempts after an invalid or truncated evaluator reply (model
+    # replies per round = repairs + 1). Provider errors are NOT retried here —
+    # the client already retried them — so the layers do not multiply.
+    eval_max_repairs: int = Field(default=1, ge=0, le=3, alias="EVAL_MAX_REPAIRS")
+    # Deadline for one round's evaluation, every request and repair included.
+    eval_round_deadline_s: float = Field(
+        default=150.0, ge=1.0, le=900.0, alias="EVAL_ROUND_DEADLINE_S"
+    )
+    # Deadline for the whole job (rounds run concurrently).
+    eval_job_deadline_s: float = Field(
+        default=240.0, ge=1.0, le=1800.0, alias="EVAL_JOB_DEADLINE_S"
+    )
+    # How many times one round may be run in total, explicit retries included.
+    eval_max_round_runs: int = Field(default=4, ge=1, le=20, alias="EVAL_MAX_ROUND_RUNS")
+    eval_max_tokens: int = Field(default=4000, ge=500, le=16000, alias="EVAL_MAX_TOKENS")
     max_model_calls_per_turn: int = Field(
         default=3, ge=1, le=10, alias="MAX_MODEL_CALLS_PER_TURN"
     )
@@ -178,6 +236,18 @@ class Settings(BaseSettings):
     )
     deepgram_utterance_end_ms: int = Field(
         default=1000, ge=0, le=5000, alias="DEEPGRAM_UTTERANCE_END_MS"
+    )
+    # When an answer is over. Deepgram's endpointing and UtteranceEnd fire on a
+    # breath-length pause, which cut candidates off mid-thought, so they are
+    # only hints now: an answer ends after this much silence following the last
+    # recognised word ...
+    answer_end_silence_ms: int = Field(
+        default=3000, ge=500, le=15000, alias="ANSWER_END_SILENCE_MS"
+    )
+    # ... or this much when the answer sounds unfinished (a trailing "and",
+    # "so", "um", a comma) or is only a few words long.
+    answer_end_extended_ms: int = Field(
+        default=5000, ge=500, le=20000, alias="ANSWER_END_EXTENDED_MS"
     )
     # UtteranceEnd and SpeechStarted are only delivered when vad_events is on.
     deepgram_vad_events: bool = Field(default=True, alias="DEEPGRAM_VAD_EVENTS")
@@ -305,6 +375,11 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _production_is_honest(self) -> "Settings":
+        if self.mock_llm and not self.allow_mock_providers:
+            raise ValueError(
+                "MOCK_LLM=1 asks for the deterministic interviewer and mock "
+                "evaluator, but ALLOW_MOCK_PROVIDERS is off. Turn one of them off."
+            )
         if self.app_env != "prod":
             return self
         if self.allow_mock_providers:
@@ -338,6 +413,31 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.app_env == "prod"
+
+    @property
+    def mocks_allowed(self) -> bool:
+        return self.allow_mock_providers and not self.is_production
+
+    @property
+    def interviewer_mode(self) -> str:
+        """
+        `groq` — the model proposes, the guard rules.
+        `deterministic` — the role-aware, plan-based interviewer with no AI
+          model. Only where mocks are allowed, and always labelled on screen.
+        `unavailable` — no key and mocks are off: sessions are refused.
+        """
+        if self.mock_llm:
+            return "deterministic"
+        if self.has_groq:
+            return "groq"
+        return "deterministic" if self.mocks_allowed else "unavailable"
+
+    @property
+    def evaluator_mode(self) -> str:
+        """`groq`, `mock` (labelled, dev/test only) or `unavailable`."""
+        if not self.mock_llm and self.has_groq:
+            return "groq"
+        return "mock" if self.mocks_allowed else "unavailable"
 
     def model_for(self, role: str) -> str:
         try:
@@ -402,8 +502,34 @@ class Settings(BaseSettings):
             "app_version": self.app_version,
             "git_sha": self.git_sha,
             "allow_mock_providers": self.allow_mock_providers,
+            "mock_llm": self.mock_llm,
+            "interviewer_mode": self.interviewer_mode,
+            "evaluator_mode": self.evaluator_mode,
+            # Configured means "a value is present". It does NOT mean the key
+            # works — /api/diagnostics/verify makes an authenticated request.
             "groq_configured": self.has_groq,
             "deepgram_configured": self.has_deepgram,
+            "groq_budget": {
+                "requests_per_minute": self.groq_requests_per_minute,
+                "max_retries": self.groq_max_retries,
+                "retries_meaning": "retries after the first attempt; attempts = retries + 1",
+                "request_timeout_s": self.groq_timeout_s,
+                "eval_request_timeout_s": self.groq_eval_timeout_s,
+                "live_model_deadline_s": self.live_model_deadline_s,
+                "max_model_calls_per_turn": self.max_model_calls_per_turn,
+                "sdk_retries": 0,
+            },
+            "evaluation_budget": {
+                "max_repairs": self.eval_max_repairs,
+                "round_deadline_s": self.eval_round_deadline_s,
+                "job_deadline_s": self.eval_job_deadline_s,
+                "max_round_runs": self.eval_max_round_runs,
+                "max_tokens": self.eval_max_tokens,
+            },
+            "retention": {
+                "guest_retention_days": self.guest_retention_days,
+                "sweep_enabled": self.guest_retention_days > 0,
+            },
             "models": {
                 "live_interviewer": self.model_live_interviewer,
                 "indexer": self.model_indexer,

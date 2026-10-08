@@ -24,6 +24,7 @@ import logging
 import shutil
 import time
 from collections.abc import Callable
+from typing import Any
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -76,7 +77,31 @@ def _now() -> str:
     return utc_now()
 
 
+class IntakeCancelled(RuntimeError):
+    """The intake directory was deleted (the candidate deleted their data)."""
+
+
+def _ensure_alive(directory: Path) -> None:
+    # A worker thread cannot be cancelled, so it checks before every write
+    # instead: once the candidate's data is gone, nothing may recreate it.
+    if not directory.is_dir():
+        raise IntakeCancelled(str(directory))
+
+
+def _write_guarded(directory: Path, path: Path, payload) -> None:
+    _ensure_alive(directory)
+    write_json(path, payload)
+
+
+def _fail_status(directory: Path, state: str, **extra) -> dict:
+    try:
+        return write_status(directory, state, **extra)
+    except IntakeCancelled:
+        return {"state": "cancelled"}
+
+
 def write_status(directory: Path, state: str, **extra) -> dict:
+    _ensure_alive(directory)
     current = read_json(directory / "status.json", {}) or {}
     payload = {
         **current,
@@ -306,9 +331,10 @@ def run_intake_sync(
             recovery="Upload a resume or paste a few sentences about your experience.",
             stage="reading_documents",
         )
+    _ensure_alive(directory)
     (directory / "background.txt").write_text(background, encoding="utf-8")
     profile = parse_resume(background)
-    write_json(directory / "resume_profile.json", profile.model_dump())
+    _write_guarded(directory, directory / "resume_profile.json", profile.model_dump())
 
     warnings: list[str] = []
     evidence: list = []
@@ -321,25 +347,26 @@ def run_intake_sync(
         warnings.extend(repo_warnings)
     else:
         summary = RepoSummary(fallback="resume-only")
-    write_json(directory / "repo_summary.json", summary.model_dump())
+    _write_guarded(directory, directory / "repo_summary.json", summary.model_dump())
 
     write_status(directory, "building_claims")
     sample_text = inputs.work_sample.text if inputs.work_sample else ""
     claims = build_claims(profile, background, evidence, work_sample_text=sample_text)
-    write_json(directory / "claims.json", claims.model_dump())
+    _write_guarded(directory, directory / "claims.json", claims.model_dump())
 
     jd_text = sanitize_text(config.job_description)
     company_text = sanitize_text(config.company_context)
     fit = fit_check(profile, jd_text) if jd_text.strip() else FitGap(
         summary="No job description was supplied, so no fit/gap was computed."
     )
-    write_json(directory / "fit_gap.json", fit.model_dump())
+    _write_guarded(directory, directory / "fit_gap.json", fit.model_dump())
 
     write_status(directory, "preparing_guidance")
     guidance = preparation_guidance(
         config, claims, fit, jd_text=jd_text, company_text=company_text
     )
-    write_json(
+    _write_guarded(
+        directory,
         directory / "prep.json",
         {"generated_at": _now(), "source": "intake", "items": guidance},
     )
@@ -381,7 +408,7 @@ def run_intake_sync(
             ),
         },
     }
-    write_json(directory / "sources.json", sources)
+    _write_guarded(directory, directory / "sources.json", sources)
     return write_status(
         directory,
         "ready",
@@ -404,12 +431,14 @@ async def run_intake_job(
             asyncio.to_thread(run_intake_sync, directory, inputs, clone=clone),
             timeout=timeout_s,
         )
+    except IntakeCancelled:
+        return {"state": "cancelled"}
     except IntakeFailed as exc:
-        return write_status(
+        return _fail_status(
             directory, "failed", error=str(exc), recovery=exc.recovery, failed_stage=exc.stage
         )
     except asyncio.TimeoutError:
-        return write_status(
+        return _fail_status(
             directory,
             "failed",
             error=f"Preparing your interview took longer than {int(timeout_s)} s.",
@@ -417,12 +446,201 @@ async def run_intake_job(
         )
     except Exception as exc:  # noqa: BLE001
         log.exception("intake failed")
-        return write_status(
+        return _fail_status(
             directory,
             "failed",
             error=f"Intake failed unexpectedly: {str(exc)[:200]}",
             recovery="Try again. If it keeps failing, paste your background as text.",
         )
+
+
+# ---------------------------------------------------------------------------
+# Stage 16: source review, practice objective, consent
+# ---------------------------------------------------------------------------
+
+REVIEW_SCHEMA = "intake-review.v1"
+MAX_EDIT_CHARS = 300
+CONTEXT_CHARS = 160
+
+# The focus a candidate may choose. Ids are the rounds' own competencies, so
+# the proposer can match them against claims without interpretation.
+PRACTICE_OBJECTIVES: dict[str, str] = {
+    "career_story": "Explaining my career story and motivation",
+    "role_understanding": "Showing I understand the role",
+    "ownership": "Making clear what I personally did",
+    "judgement": "Explaining decisions and trade-offs I made",
+    "collaboration": "Working with and influencing others",
+    "impact": "Explaining outcomes and how I knew they worked",
+    "reflection": "Talking about setbacks and what I changed",
+    "domain_knowledge": "Depth in my field",
+    "practical_application": "Walking through real work step by step",
+    "tradeoff_reasoning": "Alternatives I considered and rejected",
+}
+
+CONSENT_VERSION = "consent.v1"
+
+
+class ReviewRejected(ValueError):
+    """A review payload that cannot be applied, with a reason the UI can show."""
+
+
+def _source_text(directory: Path, claim: dict) -> str:
+    """The text a claim was taken from, as stored at intake."""
+    kind = claim.get("evidence_kind")
+    if kind == "candidate_assertion":
+        path = directory / "background.txt"
+        try:
+            return path.read_text(encoding="utf-8")
+        except OSError:
+            return ""
+    sources = read_json(directory / "sources.json", {}) or {}
+    if kind == "work_sample":
+        return str(((sources.get("work_sample") or {}).get("excerpt")) or "")
+    if kind == "repository":
+        return str(((sources.get("repository") or {}).get("readme_excerpt")) or "")
+    return ""
+
+
+def source_span(directory: Path, claim: dict) -> dict:
+    """
+    Where the original statement sits in its source, with surrounding text.
+
+    Offsets are into the stored source text with whitespace collapsed, which is
+    how claims were matched at intake. `found` is False when the stored excerpt
+    is too short to contain it (e.g. a long README), and the claim's own quote
+    is shown instead.
+    """
+    text = " ".join(_source_text(directory, claim).split())
+    quote = " ".join(str(claim.get("quote") or claim.get("text") or "").split())
+    index = text.casefold().find(quote.casefold()) if quote else -1
+    if index < 0:
+        return {"found": False, "start": None, "end": None, "before": "", "match": quote, "after": ""}
+    end = index + len(quote)
+    return {
+        "found": True,
+        "start": index,
+        "end": end,
+        "before": text[max(0, index - CONTEXT_CHARS) : index],
+        "match": text[index:end],
+        "after": text[end : end + CONTEXT_CHARS],
+    }
+
+
+def read_review(directory: Path) -> dict:
+    return read_json(directory / "review.json", None) or {
+        "schema": REVIEW_SCHEMA,
+        "statements": {},
+        "objective": None,
+        "reviewed": False,
+    }
+
+
+def save_review(directory: Path, payload: dict) -> dict:
+    """
+    Apply the candidate's review of extracted statements.
+
+    `claims.json` is never modified: the original spans stay exactly as read.
+    An edited statement is stored as a *candidate correction* with the original
+    beside it — it is the candidate's statement of what they meant, not a
+    quotation from their file. Excluded statements are not asked about.
+    """
+    from interview.intake.sanitize import sanitize_text
+
+    claims = {
+        str(c["id"]): c
+        for c in (read_json(directory / "claims.json", {}) or {}).get("claims", [])
+    }
+    statements: dict[str, dict] = {}
+    for item in payload.get("statements") or []:
+        claim_id = str(item.get("id") or "")
+        if claim_id not in claims:
+            raise ReviewRejected(f"Unknown statement {claim_id!r}.")
+        action = str(item.get("action") or "keep")
+        if action not in ("keep", "edit", "exclude"):
+            raise ReviewRejected(f"Unknown action {action!r} for {claim_id}.")
+        entry: dict[str, Any] = {"action": action, "at": _now()}
+        if action == "edit":
+            edited = " ".join(sanitize_text(str(item.get("text") or "")).split())
+            if len(edited) < 10:
+                raise ReviewRejected(
+                    "An edited statement needs at least a short sentence (10+ characters). "
+                    "To drop it, choose Exclude instead."
+                )
+            if len(edited) > MAX_EDIT_CHARS:
+                raise ReviewRejected(f"Keep an edited statement under {MAX_EDIT_CHARS} characters.")
+            entry["text"] = edited
+        statements[claim_id] = entry
+    objective = payload.get("objective")
+    clean_objective = None
+    if objective:
+        competency = str((objective or {}).get("competency") or "")
+        if competency not in PRACTICE_OBJECTIVES:
+            raise ReviewRejected("Choose a practice focus from the list.")
+        note = " ".join(sanitize_text(str(objective.get("note") or "")).split())[:200]
+        clean_objective = {
+            "competency": competency,
+            "label": PRACTICE_OBJECTIVES[competency],
+            "note": note,
+        }
+    review = {
+        "schema": REVIEW_SCHEMA,
+        "statements": statements,
+        "objective": clean_objective,
+        "reviewed": True,
+        "updated_at": _now(),
+    }
+    write_json(directory / "review.json", review)
+    return review
+
+
+def accepted_claims(directory: Path) -> list[dict]:
+    """
+    The statements the interview may use, after the candidate's review.
+
+    Excluded → dropped. Edited → `text` is the candidate's wording, marked
+    `evidence_kind="candidate_correction"`, with `original_text` kept. Kept →
+    unchanged. Without a review every extracted statement is used, as before.
+    """
+    raw = (read_json(directory / "claims.json", {}) or {}).get("claims", [])
+    review = read_review(directory).get("statements", {})
+    out: list[dict] = []
+    for claim in raw:
+        decision = review.get(str(claim.get("id")), {"action": "keep"})
+        if decision.get("action") == "exclude":
+            continue
+        if decision.get("action") == "edit" and decision.get("text"):
+            out.append(
+                {
+                    **claim,
+                    "original_text": claim.get("text"),
+                    "original_evidence_kind": claim.get("evidence_kind"),
+                    "text": decision["text"],
+                    "evidence_kind": "candidate_correction",
+                }
+            )
+            continue
+        out.append(dict(claim))
+    return out
+
+
+def objective_for(directory: Path) -> dict | None:
+    return read_review(directory).get("objective")
+
+
+def write_consent(directory: Path, *, voice: bool) -> dict:
+    record = {
+        "version": CONSENT_VERSION,
+        "at": _now(),
+        "documents_to_model_provider": True,
+        "speech_to_speech_provider": bool(voice),
+        "guest_identity_understood": True,
+    }
+    write_json(directory / "consent.json", record)
+    return record
+
+
+def read_consent(directory: Path) -> dict | None:
+    return read_json(directory / "consent.json", None)
 
 
 def load_intake(directory: Path) -> dict:
@@ -432,7 +650,19 @@ def load_intake(directory: Path) -> dict:
     if status.get("state") != "ready":
         return out
     out["config"] = read_json(directory / "config.json", {})
-    out["claims"] = (read_json(directory / "claims.json", {}) or {}).get("claims", [])
+    review = read_review(directory)
+    claims = (read_json(directory / "claims.json", {}) or {}).get("claims", [])
+    out["claims"] = [
+        {
+            **claim,
+            "source_span": source_span(directory, claim),
+            "review": review.get("statements", {}).get(str(claim.get("id")), {"action": "keep"}),
+        }
+        for claim in claims
+    ]
+    out["review"] = review
+    out["objectives"] = PRACTICE_OBJECTIVES
+    out["consent"] = read_consent(directory)
     out["fit_gap"] = read_json(directory / "fit_gap.json", {})
     out["prep"] = read_json(directory / "prep.json", {})
     out["sources"] = read_json(directory / "sources.json", {})
@@ -442,6 +672,16 @@ def load_intake(directory: Path) -> dict:
 
 
 __all__ = [
+    "CONSENT_VERSION",
+    "PRACTICE_OBJECTIVES",
+    "ReviewRejected",
+    "accepted_claims",
+    "objective_for",
+    "read_consent",
+    "read_review",
+    "save_review",
+    "source_span",
+    "write_consent",
     "INTAKE_TIMEOUT_S",
     "IntakeFailed",
     "IntakeInputs",

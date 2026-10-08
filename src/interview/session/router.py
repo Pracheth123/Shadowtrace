@@ -25,6 +25,25 @@ _DEFEND = (
 )
 _WORDS = re.compile(r"\b[\w']+\b")
 
+# The candidate asking to leave the current question. Phrases, not the bare
+# word "skip", so "we skipped the cache" in a real answer does not trigger it.
+_SKIP = re.compile(
+    r"\b("
+    r"skip (this|that|it|the question|this question|that question|to the next)"
+    r"|(can|could) we skip"
+    r"|let'?s skip"
+    r"|(i'?d|i would) like to skip"
+    r"|next question"
+    r"|(let'?s|can we|could we) move on"
+    r"|move on to the next"
+    r"|pass on this"
+    r"|i'?ll pass"
+    r")\b"
+)
+# A skip request is short. A long answer that happens to contain "move on" is
+# an answer, and gets the normal follow-up.
+_SKIP_MAX_WORDS = 20
+
 
 def route_answer(text: str) -> Route:
     folded = text.casefold()
@@ -34,6 +53,19 @@ def route_answer(text: str) -> Route:
     if any(phrase in folded for phrase in _DEFEND) or len(words) >= 12:
         return "defended"
     return "unclear"
+
+
+def is_skip_request(text: str) -> bool:
+    """
+    True when the candidate asked to move past the current question.
+
+    Feeds the agent only (contract 8): it stops a follow-up on this question,
+    never changes a score, and the guard still decides what is asked next.
+    """
+    folded = text.casefold().replace("’", "'")
+    if len(_WORDS.findall(folded)) > _SKIP_MAX_WORDS:
+        return False
+    return _SKIP.search(folded) is not None
 
 
 def concession_line(question: str) -> str:

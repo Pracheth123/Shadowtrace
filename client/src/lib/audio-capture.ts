@@ -113,6 +113,12 @@ export async function startCapture(
   // resample behind our back, and the server already converts from whatever the
   // device actually runs at.
   const context = new AudioContext();
+  // The mic opens after the server confirms the session, which can be outside
+  // the Start click. A suspended context emits no frames and raises no error,
+  // so nothing would be transcribed and nothing would say why.
+  if (context.state === "suspended") {
+    await context.resume().catch(() => undefined);
+  }
   try {
     await context.audioWorklet.addModule("/pcm-capture-worklet.js");
   } catch (error) {

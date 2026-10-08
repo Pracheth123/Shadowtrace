@@ -13,6 +13,11 @@ versions and evaluator kind. Within a compatible group:
 
 A difference in difficulty between compared sessions is stated beside the
 comparison rather than silently adjusted for.
+
+Stage 16: a finding the candidate disputed is not counted as a recurring gap
+or a next-practice item, and a dimension whose only support was a disputed
+finding is left out of the comparison (with a note) until the dispute is
+settled. Practice attempts are listed separately and never join a trend.
 """
 
 from __future__ import annotations
@@ -21,6 +26,7 @@ from collections import defaultdict
 
 from interview.candidates import CandidateRegistry, read_json
 from interview.roadmap.reports import ReportStore
+from interview.services.feedback import EXCLUDING, contested, read_disputes
 
 ROUND_LABEL = {
     "hr": "HR",
@@ -32,7 +38,7 @@ ROUND_LABEL = {
 
 def session_rows(registry: CandidateRegistry, store: ReportStore, candidate_id: str) -> list[dict]:
     """Every session the candidate has, newest first, whatever its state."""
-    scored = {row["session_id"]: row for row in store.sessions(candidate_id)}
+    scored = {row["session_id"]: row for row in store.sessions(candidate_id, kind=None)}
     rows: list[dict] = []
     for session_id in registry.session_ids(candidate_id):
         meta = read_json(registry.session_dir(candidate_id, session_id) / "meta.json", {}) or {}
@@ -54,15 +60,42 @@ def session_rows(registry: CandidateRegistry, store: ReportStore, candidate_id: 
                 "evaluator_provider": row["evaluator_provider"] if row else None,
                 "compat_key": row["compat_key"] if row else None,
                 "error": meta.get("error"),
+                "kind": meta.get("kind") or "interview",
+                "practice": meta.get("practice"),
+                "open_disputes": sum(
+                    1
+                    for d in read_disputes(registry.session_dir(candidate_id, session_id)).values()
+                    if d.get("status") in EXCLUDING
+                ),
             }
         )
     rows.sort(key=lambda r: r["created_at"], reverse=True)
     return rows
 
 
-def comparisons(store: ReportStore, candidate_id: str) -> list[dict]:
+def _contested_by_session(
+    registry: CandidateRegistry | None, candidate_id: str, session_ids: list[str]
+) -> dict[str, dict]:
+    """session id → contested findings/dimensions from that session's disputes."""
+    if registry is None:
+        return {}
+    out: dict[str, dict] = {}
+    for session_id in session_ids:
+        directory = registry.session_dir(candidate_id, session_id)
+        disputes = read_disputes(directory)
+        if not disputes:
+            continue
+        report = read_json(directory / "evaluation" / "report.json", {}) or {}
+        out[session_id] = contested(report, disputes)
+    return out
+
+
+def comparisons(
+    store: ReportStore, candidate_id: str, registry: CandidateRegistry | None = None
+) -> list[dict]:
     """One entry per compatible group that has at least two evaluated sessions."""
     sessions = store.sessions(candidate_id)
+    excluded = _contested_by_session(registry, candidate_id, [s["session_id"] for s in sessions])
     groups: dict[str, list[dict]] = defaultdict(list)
     for row in sessions:
         groups[row["compat_key"]].append(row)
@@ -78,9 +111,16 @@ def comparisons(store: ReportStore, candidate_id: str) -> list[dict]:
             by_session[dim["session_id"]][(dim["round"], dim["dimension_id"])] = dim
         changes: list[dict] = []
         not_comparable: list[str] = []
+        disputed: list[str] = []
+        blocked: set = set()
+        for sid in (previous["session_id"], latest["session_id"]):
+            blocked |= set(excluded.get(sid, {}).get("dimensions", set()))
         for ref, now in sorted(by_session[latest["session_id"]].items()):
             before = by_session[previous["session_id"]].get(ref)
             if before is None:
+                continue
+            if ref in blocked:
+                disputed.append(now["label"])
                 continue
             if before["score"] is None or now["score"] is None:
                 not_comparable.append(now["label"])
@@ -108,6 +148,12 @@ def comparisons(store: ReportStore, candidate_id: str) -> list[dict]:
             notes.append(
                 "Not compared because one session did not assess them: "
                 + ", ".join(sorted(set(not_comparable)))
+                + "."
+            )
+        if disputed:
+            notes.append(
+                "Left out while you dispute the only feedback behind them: "
+                + ", ".join(sorted(set(disputed)))
                 + "."
             )
         series = (
@@ -145,13 +191,19 @@ def comparisons(store: ReportStore, candidate_id: str) -> list[dict]:
     return out
 
 
-def recurring_gaps(store: ReportStore, candidate_id: str) -> list[dict]:
+def recurring_gaps(
+    store: ReportStore, candidate_id: str, registry: CandidateRegistry | None = None
+) -> list[dict]:
     """A gap dimension seen in two or more sessions of the same compatible group."""
     sessions = store.sessions(candidate_id)
     key_of = {row["session_id"]: row["compat_key"] for row in sessions}
     gaps = store.gaps(list(key_of))
+    excluded = _contested_by_session(registry, candidate_id, list(key_of))
     seen: dict[tuple[str, str, str], dict] = {}
     for gap in gaps:
+        blocked = excluded.get(gap["session_id"], {}).get("findings", set())
+        if gap.get("finding_id") and gap["finding_id"] in blocked:
+            continue
         ref = (key_of[gap["session_id"]], gap["round"], gap["dimension_id"])
         entry = seen.setdefault(
             ref,
@@ -185,7 +237,7 @@ def practice_plan(
     item names where it came from.
     """
     items: list[dict] = []
-    for gap in recurring_gaps(store, candidate_id):
+    for gap in recurring_gaps(store, candidate_id, registry):
         example = gap["examples"][-1]
         items.append(
             {
@@ -209,7 +261,12 @@ def practice_plan(
             None,
         )
     if latest_report:
+        latest_dir = registry.session_dir(candidate_id, latest_report["session_id"])
+        blocked = contested(latest_report, read_disputes(latest_dir))["findings"]
         for rec in latest_report.get("recommendations", []):
+            ids = {e.get("finding_id") for e in rec.get("evidence", []) if e.get("finding_id")}
+            if ids & blocked:
+                continue
             items.append({**rec, "session_id": latest_report["session_id"]})
 
     intake_items: list[dict] = []
@@ -233,8 +290,27 @@ def practice_plan(
                 }
                 for item in prep.get("items", [])
             ]
+    from interview.services.practice import list_practices, practice_view
+
+    practice_items = []
+    for record in list_practices(registry, candidate_id)[:6]:
+        view = practice_view(registry, candidate_id, record)
+        practice_items.append(
+            {
+                "practice_id": record["practice_id"],
+                "title": f"Practice: {record['dimension_label']} ({record.get('round_label')})",
+                "mode": record["mode"],
+                "attempts": len(record.get("attempts", [])),
+                "latest_outcome": view["latest_outcome"],
+                "offer_unaided_variation": view["offer_unaided_variation"],
+                "parent_session_id": record["parent"]["session_id"],
+                "parent_finding_id": record["parent"]["finding_id"],
+                "created_at": record.get("created_at"),
+            }
+        )
     return {
         "items": items[:10],
+        "practice": practice_items,
         "preparation": intake_items,
         "based_on_sessions": len(sessions),
         "note": (

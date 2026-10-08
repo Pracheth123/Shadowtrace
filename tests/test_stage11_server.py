@@ -93,7 +93,7 @@ def test_health_reports_the_stage_and_the_panel_flag(server, monkeypatch) -> Non
     monkeypatch.delenv("PANEL_MODE", raising=False)
     with TestClient(server.app) as client:
         body = client.get("/health").json()
-    assert body["stage"] == 15
+    assert body["stage"] == 16
     assert body["panel_mode"] is False
     assert body["session_limit"] == 8
 

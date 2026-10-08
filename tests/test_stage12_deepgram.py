@@ -307,17 +307,25 @@ async def test_api_key_travels_in_a_server_header_only() -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-async def _collect(script: list[dict], *, turn_id: str = "turn-1"):
+# The shortest allowed answer-end silence, so tests that need an answer to
+# close do not wait the real 3-5 s.
+FAST_END = {"ANSWER_END_SILENCE_MS": 500, "ANSWER_END_EXTENDED_MS": 500}
+
+
+async def _collect(
+    script: list[dict], *, turn_id: str = "turn-1", wait: float = 0.25, **overrides
+):
     fake = FakeListen(script)
     events: list = []
     async with running(fake.handler) as url:
         bus = EventBus()
         bus.subscribe_all(lambda event: events.append(event))
         stt = DeepgramStt(
-            bus, "s1", settings(), url_override=url, get_turn_id=lambda: turn_id
+            bus, "s1", settings(**overrides), url_override=url,
+            get_turn_id=lambda: turn_id,
         )
         await stt.start()
-        await asyncio.sleep(0.25)
+        await asyncio.sleep(wait)
         await bus.drain()
         await stt.close()
     return stt, events
@@ -328,7 +336,8 @@ async def test_many_final_segments_make_one_answer() -> None:
     """
     The core fix. Three `is_final` segments and one `speech_final` is one
     answer, not three. The old adapter emitted a completed answer per segment,
-    which made the interviewer reply mid-sentence.
+    which made the interviewer reply mid-sentence. The answer closes once the
+    candidate has been silent long enough.
     """
     script = [
         results("I owned", start=0.0, duration=0.5),
@@ -344,7 +353,7 @@ async def test_many_final_segments_make_one_answer() -> None:
         results("this quarter", is_final=True, speech_final=True, start=2.5, duration=0.6,
                 words=[("this", 2.5, 2.7), ("quarter", 2.7, 3.1)]),
     ]
-    stt, events = await _collect(script)
+    stt, events = await _collect(script, wait=0.9, **FAST_END)
 
     finals = [e for e in events if e.type == "final_transcript"]
     assert len(finals) == 1, f"expected one answer, got {len(finals)}"
@@ -352,7 +361,7 @@ async def test_many_final_segments_make_one_answer() -> None:
     # Word timings from every segment are preserved, in order.
     assert [w.word for w in finals[0].word_timings][:3] == ["I", "owned", "the"]
     assert len(finals[0].word_timings) == 11
-    assert finals[0].boundary == "speech_final"
+    assert finals[0].boundary == "timeout"
     # Deepgram reports real per-word times on finalised segments.
     assert finals[0].timings_estimated is False
     assert finals[0].confidence == pytest.approx(0.95)
@@ -398,17 +407,34 @@ async def test_partials_continue_after_a_finalised_segment() -> None:
 
 
 @pytest.mark.asyncio
-async def test_utterance_end_closes_a_turn_endpointing_missed() -> None:
+async def test_a_thinking_pause_does_not_end_the_answer() -> None:
+    """
+    `speech_final` (a 300 ms gap) and `UtteranceEnd` (~1 s) are breaths, not
+    the end of an answer. Ending on them moved the interview on mid-thought.
+    """
+    script = [
+        results("I shipped it last week", is_final=True, speech_final=True,
+                start=0.0, duration=1.2,
+                words=[("I", 0.0, 0.1), ("shipped", 0.1, 0.5)]),
+        {"type": "UtteranceEnd", "channel": [0, 1], "last_word_end": 1.2},
+    ]
+    stt, events = await _collect(script, wait=0.4)
+    assert [e for e in events if e.type == "final_transcript"] == []
+    assert stt.pending_segments == ["I shipped it last week"]
+
+
+@pytest.mark.asyncio
+async def test_silence_after_the_last_word_ends_the_answer() -> None:
     script = [
         results("I shipped it last week", is_final=True, start=0.0, duration=1.2,
                 words=[("I", 0.0, 0.1), ("shipped", 0.1, 0.5)]),
         {"type": "UtteranceEnd", "channel": [0, 1], "last_word_end": 1.2},
     ]
-    stt, events = await _collect(script)
+    stt, events = await _collect(script, wait=0.9, **FAST_END)
     finals = [e for e in events if e.type == "final_transcript"]
     assert len(finals) == 1
-    assert finals[0].boundary == "utterance_end"
-    assert stt.stats.boundary_counts == {"utterance_end": 1}
+    assert finals[0].boundary == "timeout"
+    assert stt.stats.boundary_counts == {"timeout": 1}
 
 
 @pytest.mark.asyncio
@@ -422,7 +448,7 @@ async def test_both_boundary_signals_still_make_one_answer() -> None:
                 words=[("done", 0.0, 0.5)]),
         {"type": "UtteranceEnd", "channel": [0, 1], "last_word_end": 0.5},
     ]
-    stt, events = await _collect(script)
+    stt, events = await _collect(script, wait=0.9, **FAST_END)
     assert len([e for e in events if e.type == "final_transcript"]) == 1
     assert stt.stats.turns_completed == 1
     assert stt.pending_segments == []

@@ -63,7 +63,12 @@ from interview.session.guard import Intent
 from interview.session.intensity import apply_tone, step_down, step_up, with_hint
 from interview.session.interviewer import LeadInterviewer
 from interview.session.panel import Panel
-from interview.session.router import concession_line, draft_is_stale, route_answer
+from interview.session.router import (
+    concession_line,
+    draft_is_stale,
+    is_skip_request,
+    route_answer,
+)
 from interview.session.signals import ClaimHint, SignalExtractor, SignalReading
 from interview.session.tools import Claim, SessionTools, load_claims_fixture
 from interview.session.transcript import TranscriptWriter
@@ -171,6 +176,12 @@ class SessionConfig:
     # session runs single-voice and `panel.enabled` stays False.
     panel_mode: bool = False
     lane: str = "voice"  # "voice" | "text"
+    # Stage 16. The candidate's selected focus, passed to every round's
+    # proposer as read-only data. The guard is unchanged by it.
+    objective: dict | None = None
+    # Stage 16. A practice session supplies its own short pack per round
+    # (round value → Pack) instead of the pack on disk.
+    pack_overrides: dict | None = None
 
 
 @dataclass
@@ -215,6 +226,13 @@ class LiveSession:
         self._round_followups = 0
         self._current_competency = ""
         self.ended_reason = ""
+        # Stage 16 audit: every turn where the model was configured but the
+        # role's plan-based proposer had to ask instead. Reported in meta.json
+        # and on screen; never presented as an AI-chosen question.
+        self.degraded_turns: list[dict] = []
+        # Set when the candidate deleted their data mid-session: close without
+        # writing a transcript (the directory is about to be removed).
+        self.discard_outputs = False
         self._model_client = None
         if not self.config.use_mock_llm:
             from interview.llm.client import GroqModelClient
@@ -322,7 +340,15 @@ class LiveSession:
         # the guard's repeat rule works across rounds, not only within one.
         tools.asked = list(coordinator.questions_asked_everywhere)
         if self._model_client is not None:
-            proposer = ModelProposer(plan.spec, self._model_client)
+            from interview.config import get_settings
+
+            settings = get_settings()
+            proposer = ModelProposer(
+                plan.spec,
+                self._model_client,
+                max_tokens=settings.structured_reply_max_tokens,
+                deadline_s=settings.live_model_deadline_s,
+            )
         else:
             proposer = DeterministicProposer(plan.spec)
         kwargs: dict = {"scripted_intents": self.config.scripted_intents}
@@ -338,6 +364,7 @@ class LiveSession:
             **kwargs,
         )
         agent.handoff_context = coordinator.context_for_current()
+        agent.objective = dict(self.config.objective or {})
         self._tools = tools
         self._agent = agent
         self._agents = {plan.spec.persona: agent}
@@ -355,7 +382,9 @@ class LiveSession:
 
         interview = self.config.interview
         assert interview is not None
-        self._coordinator = Coordinator(interview)
+        self._coordinator = Coordinator(
+            interview, pack_overrides=self.config.pack_overrides
+        )
         # The whole-interview cap is the configured budget plus a short grace,
         # not the single-pack default of six turns.
         self.config.max_minutes = interview.total_seconds / 60.0 + 3.0
@@ -423,9 +452,20 @@ class LiveSession:
         before = self._proposer_fallbacks()
         outcome = await self._agent.run(turn_id=turn_id, turn_index=turn_index)
         if self._proposer_fallbacks() > before:
+            proposer = getattr(self._agent, "_proposer", None)
+            reason = str(getattr(proposer, "last_fallback_reason", "") or "unavailable")
+            self.degraded_turns.append(
+                {
+                    "turn_id": turn_id,
+                    "round": self._coordinator.current.round.value
+                    if self._coordinator is not None
+                    else None,
+                    "reason": reason,
+                }
+            )
             await self.note_fallback(
                 "provider_failover",
-                "interviewer model unavailable or invalid; deterministic role proposer used",
+                f"interviewer model {reason}; deterministic role proposer used",
                 turn_id=turn_id,
             )
             if self.on_wire:
@@ -436,6 +476,7 @@ class LiveSession:
                             "The interviewer model did not respond usefully, so this "
                             "question came from the interview plan instead."
                         ),
+                        "degraded_turns": len(self.degraded_turns),
                     }
                 )
         return outcome
@@ -533,7 +574,11 @@ class LiveSession:
             reading = self._extractor.update(event.text, looks_complete=True)
             await self._note_distress(turn_id, list(reading.distress_triggers))
         if self.on_wire:
-            await self.on_wire({"type": "turn_end", "turn_id": event.turn_id})
+            # The accepted answer, so the room can show a visible transcript of
+            # exactly what was recorded (voice and typed answers alike).
+            await self.on_wire(
+                {"type": "turn_end", "turn_id": event.turn_id, "text": event.text}
+            )
 
         if self._gen_task and not self._gen_task.done():
             try:
@@ -754,6 +799,9 @@ class LiveSession:
             self._gen_task = None
         await self._cancel_generation("session_end")
         self._note_round_elapsed()
+        if self.discard_outputs:
+            # The candidate deleted their data. Nothing is spoken or written.
+            return
         if reason not in ("closer_already_spoken", "disconnect"):
             closer = (
                 ROUND_CLOSERS.get(reason, ROUND_CLOSERS["limit"])
@@ -811,11 +859,17 @@ class LiveSession:
         )
         if self._tools is not None:
             self._tools.add_transcript(event.text)
+        # Every panel member sees the answer, so whoever holds the floor can
+        # honour a request to skip.
+        for agent in {id(a): a for a in (self._agent, *self._agents.values()) if a}.values():
+            agent.note_answer(event.text)
         if self._extractor is not None:
             reading = self._extractor.update(event.text, looks_complete=True)
             await self._note_distress(event.turn_id or "", list(reading.distress_triggers))
         if self.on_wire:
-            await self.on_wire({"type": "turn_end", "turn_id": event.turn_id})
+            await self.on_wire(
+                {"type": "turn_end", "turn_id": event.turn_id, "text": event.text}
+            )
 
         if self._should_close():
             await self.end(reason="limit")
@@ -834,6 +888,11 @@ class LiveSession:
             async with self._turn_lock(turn_id):
                 self._finished.add(turn_id)
                 draft = self._drafts.pop(turn_id, None)
+            if draft is not None and is_skip_request(event.text):
+                # The draft was made from partials before the request was
+                # heard, and may be a follow-up on the question being skipped.
+                self.stale_drafts += 1
+                draft = None
             if draft is not None:
                 self._gen_task = asyncio.create_task(
                     self._speak_prepared(draft, event, turn_id)

@@ -6,13 +6,22 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class IntakeRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
-    resume_path: str
+    resume_path: str | None = None
+    background_text: str | None = None
+    target_role: str = ""
+    role_family: str = "software"
+    seniority: str = "mid"
+    round: str = "full"
+    lane: str = "voice"
+    intensity: str = "realistic"
+    company_context: str | None = None
     repo_url: str | None = None
     repo_path: str | None = None
     jd_path: str | None = None
     jd_text: str | None = None
+    work_sample_path: str | None = None
     out_dir: str
     max_steps: int = Field(default=8, ge=1, le=32)
 

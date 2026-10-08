@@ -1,8 +1,11 @@
-# Shadow Trace — implemented architecture (stage 15)
+# Shadow Trace — implemented architecture (stage 16)
 
 This describes what the code does today, end to end. Where the pitch deck,
 older stage briefs or `PLANNING.md` disagree with this file, this file and the
 code are current. Optional features that do **not** exist are listed at the end.
+
+Stage 16 additions are marked **(16)**. What changed and why, with evidence:
+`docs/decisions/stage16_upgrade.md`. API and report schema: `docs/API.md`.
 
 ## The journey, as a candidate reaches it
 
@@ -37,6 +40,23 @@ Plan     ◀─GET /api/plan──────────── recurring gaps 
 Delete   ──POST /api/me/delete──────▶ erase candidate dir, report rows, legacy rows, identity
 ```
 
+### Stage 16 additions to the journey
+
+```
+Setup ── consent (Groq, Deepgram, guest key, retention) ──POST /api/intake{consent=1}
+Review ── statements shown inside their source text ──PUT /api/intake/<iid>/review
+          keep | correct meaning (stored as candidate_correction) | exclude; practice focus
+Room   ── visible transcript (turn_end.text), keys Esc/M/T//, mic retry, switch to typing
+Results ◀─GET /api/sessions/<sid>/evaluation── per-round: queued→running→complete|failed|not_assessed
+          finished rounds readable immediately; report only when all settle; retry failed rounds only
+        ◀─GET …/report── report.v3 + disputes + revisions + contested (stored report never rewritten)
+        ──POST …/findings/<fid>/dispute · /revision · /dispute/status
+        ──POST /api/practice{session_id, finding_id}──▶ practice/<pid>/practice.json
+Practice ── checklist (only the candidate's own words) ──WS session_start{practice_id}
+          one round, short practice pack, same rubric ──▶ evaluation ──▶ before/after on one dimension
+Delete  ── close live session → cancel+await tasks → remove everything; retention sweep uses the same routine
+```
+
 ## Components
 
 | Concern | Module | Notes |
@@ -56,7 +76,16 @@ Delete   ──POST /api/me/delete──────▶ erase candidate dir, rep
 | Scores | `evaluation/rubrics.py` | Round score = weighted mean over **assessed** dimensions only, weights renormalised and shown. Overall = rounds' scores weighted by round share, renormalised over scored rounds. No neutral 0.5 anywhere: missing evidence is "Not scored". |
 | Delivery | `role_eval.delivery_observations` | Voice only. Measured: answer length, words/minute from STT word timings, against the candidate's own first answer. Never in any score. Not measured: tone, pitch, accent, appearance. Text lane: "not assessed". |
 | Store & history | `roadmap/reports.py`, `services/history.py` | `session_reports`, `round_dimension_scores`, `report_gaps`. Comparable = same profession, round selection, lane, rubric versions, evaluator kind. 1 session → no comparison; 2 → "change since previous comparable session"; ≥3 → trend. Difficulty differences are stated. |
-| Results UI | `client/src/pages/ResultsDashboard.tsx` | Fetches `/api/sessions/<sid>` and `/report` by id; states loading/evaluating/failed+retry/complete; rubric with weights, levels, quotes; strengths/gaps; claims with meanings; disagreements; delivery; limitations; transcript and scorecard downloads; history opens real reports; delete-my-data. No `/dashboard.json`. |
+| **(16)** Settings | `src/interview/config.py` | One source: process env > `.env` > defaults. `inference.yaml` keeps only generation defaults and TTS vendor. `interviewer_mode` / `evaluator_mode` (`groq` / `deterministic`/`mock` / `unavailable`); `MOCK_LLM` requires mocks allowed; prod refuses mocks. |
+| **(16)** Model client | `src/interview/llm/client.py` | SDK retries off; per-request timeout; `GROQ_MAX_RETRIES` retries for 429/408/409/5xx/timeout/connection honouring `Retry-After`; one fallback hop (never on auth); optional overall deadline; returns provider/model_used/fallback/attempts/limiter wait/request time/tokens. Live proposer uses `LIVE_MODEL_DEADLINE_S` and the per-turn budget (keyed by turn id). |
+| **(16)** Diagnostics | `services/diagnostics.py`, `tools/check_providers.py` | Configured vs authenticated-request-succeeded; per-model availability; cached; no secrets. |
+| **(16)** Evaluation jobs | `services/evaluation.py` | Per-round states and persisted results (`evaluation/rounds/<round>.json`), concurrent rounds, failed-round retry, cache keyed by candidate/session/transcript/claims/rubric/prompt/evaluator, restart → `interrupted`, deadlines, timings (end → first result → report). Writes refuse to recreate deleted candidates. |
+| **(16)** Feedback provenance | `evaluation/role_eval.py` | report.v3: `source_match` (≥ 12 chars, correct turn of that round), question + limitation + action per finding, top-3 priority, plain claim labels, `insufficient_evidence` rounds with no model call. Repairs only for invalid/truncated JSON. |
+| **(16)** Disputes | `services/feedback.py` | Disputes and labelled re-checks stored beside the report; excluded from comparisons, recurring gaps, plan and practice while open. |
+| **(16)** Practice | `services/practice.py` | Server-derived record, checklist from candidate-supplied facts only, practice pack through the coordinator (`pack_overrides`), same-rubric comparison with explicit outcomes, unaided variation. Practice reports stored with `session_kind='practice'` and never on trends. |
+| **(16)** Intake review | `services/intake.py` | Source spans, keep/edit/exclude (`review.json`; `claims.json` untouched), practice focus passed to proposers as data (guard unchanged), consent record, write guards for deletion. |
+| **(16)** Retention | `services/retention.py` | Hourly sweep of guests inactive for `GUEST_RETENTION_DAYS`, using the delete routine. |
+| Results UI | `client/src/pages/ResultsDashboard.tsx`, `PracticePage.tsx` | **(16)** Polls `/evaluation` for per-round states with real elapsed seconds (no percentage); shows finished rounds early; retries failed rounds only. Report leads with ≤ 3 practice findings (question, quoted answer "found in your answer", why, limits, next step), then dimension levels with the answer behind each, then the overall indicator. Dispute / re-check / accept / withdraw; "Practise this gap"; practice page with checklist, attempts and before/after. History and Next practice list practice; delete explains what it cannot reach. |
 
 Contracts preserved: typed events (new additive `round_transition`, additive
 `session_complete.rounds/ended_reason`, `fallback_used.kind=voice_to_text`),
@@ -82,10 +111,14 @@ resume text only reach models as delimited data.
 
 ## Run
 
-```bash
-pip install -e .                       # Python 3.11+
-uvicorn interview.server:app --host 127.0.0.1 --port 8000
-cd client && npm install && npm run dev   # http://localhost:5173
+Exact Windows PowerShell steps are in the root `README.md`. In short:
+
+```powershell
+py -3.12 -m venv .venv; .\.venv\Scripts\Activate.ps1
+python -m pip install -e ".[test]"
+python -m uvicorn interview.server:app --host 127.0.0.1 --port 8000
+# second terminal
+cd client; npm install; npm run dev     # http://localhost:5173
 ```
 
 ## Verify
