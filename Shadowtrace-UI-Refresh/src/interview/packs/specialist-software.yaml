@@ -1,0 +1,45 @@
+pack_id: specialist-software
+title: Software specialist round
+round: domain_specialist
+role_family: software
+# The deepest round, and the one claim interrogation belongs in.
+time_budget_s: 720
+spine:
+  - id: design-choice
+    text: "Take a system you built. Walk me through the design and the choice you were least sure about."
+    competency: tradeoff_reasoning
+  - id: hardest-bug
+    text: "Tell me about the hardest bug you have chased down. How did you find it?"
+    competency: practical_application
+  - id: scale-limit
+    text: "Where does something you have built fail first as load grows, and how would you know?"
+    competency: domain_knowledge
+  - id: would-redo
+    text: "What part of that work would you build differently now?"
+    competency: tradeoff_reasoning
+competencies:
+  - id: domain_knowledge
+    label: Domain knowledge
+  - id: practical_application
+    label: Practical application
+  - id: tradeoff_reasoning
+    label: Tradeoff reasoning
+probe_policy:
+  max_depth: 4
+  seconds_per_spine: 110
+  min_probe_s: 50
+rubric:
+  version: specialist.software.v1
+  dimensions:
+    - id: domain_knowledge
+      label: Technical substance
+      weight: 0.40
+      kind: knowledge
+    - id: practical_application
+      label: Implementation and debugging
+      weight: 0.35
+      kind: reasoning
+    - id: tradeoff_reasoning
+      label: Design tradeoffs
+      weight: 0.25
+      kind: reasoning

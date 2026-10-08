@@ -1,0 +1,254 @@
+"""
+Pack schema and loader.
+
+A pack is data: spine text, competencies, time budget, probe policy, scoring
+weights. Adding a format means adding a YAML file, not writing code.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import yaml
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+_PACK_DIR = Path(__file__).parent
+
+
+class PackLoadError(ValueError):
+    """YAML missing, unreadable, or failed validation."""
+
+
+class SpineItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    text: str
+    competency: str
+
+
+class Competency(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    label: str
+
+
+class ProbePolicy(BaseModel):
+    """How far a probe may go, and how much time the guard reserves for spine."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_depth: int = Field(ge=0)
+    seconds_per_spine: float = Field(gt=0)
+    min_probe_s: float = Field(gt=0)
+
+
+class PanelRole(BaseModel):
+    """
+    One interviewer voice in panel mode — stage 11.
+
+    A pack declares who is in the room. The panel shares one guard, so a role
+    carries no rules of its own: it names a persona, a TTS voice, and the
+    competency this voice leans on when the shared guard leaves a free choice.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    persona: str
+    label: str
+    voice: str
+    competency: str
+
+
+class RubricDimension(BaseModel):
+    """
+    One dimension a round actually assesses.
+
+    Replaces the assumption that every interview scores the same four technical
+    dimensions. A sales specialist round has no "technical substance" axis, and
+    inventing one so the shape matches is how a candidate ends up with a
+    meaningless score on a skill nobody asked about.
+
+    `kind` says what the dimension rests on:
+      - "reasoning"  — judgement shown in the answer
+      - "knowledge"  — domain knowledge demonstrated
+      - "evidence"   — consistency with supplied material
+      - "communication" — structure and clarity of the answer itself
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    label: str
+    weight: float = Field(ge=0.0, le=1.0)
+    kind: Literal["reasoning", "knowledge", "evidence", "communication"]
+
+
+class PackRubric(BaseModel):
+    """
+    Versioned rubric for one round.
+
+    The version is part of the identity because a report written against
+    rubric v1 is not comparable to one written against v2, and silently
+    charting them as one trend would invent improvement or decline that never
+    happened.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: str
+    dimensions: list[RubricDimension] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _weights_and_ids(self) -> "PackRubric":
+        seen: set[str] = set()
+        for dimension in self.dimensions:
+            if dimension.id in seen:
+                raise ValueError(f"duplicate rubric dimension {dimension.id}")
+            seen.add(dimension.id)
+        total = sum(dimension.weight for dimension in self.dimensions)
+        if abs(total - 1.0) > 1e-6:
+            raise ValueError(f"rubric weights must sum to 1, got {total}")
+        return self
+
+    def dimension_ids(self) -> list[str]:
+        return [dimension.id for dimension in self.dimensions]
+
+
+class ScoringWeights(BaseModel):
+    """Four dimensions. Equal weight by default; a pack may reweight."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    technical: float = Field(ge=0)
+    structure: float = Field(ge=0)
+    delivery: float = Field(ge=0)
+    competency: float = Field(ge=0)
+
+    @model_validator(mode="after")
+    def _sum_to_one(self) -> "ScoringWeights":
+        total = self.technical + self.structure + self.delivery + self.competency
+        if abs(total - 1.0) > 1e-6:
+            raise ValueError(f"scoring_weights must sum to 1, got {total}")
+        return self
+
+
+class Pack(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    pack_id: str
+    title: str
+    time_budget_s: float = Field(gt=0)
+    spine: list[SpineItem] = Field(min_length=1)
+    competencies: list[Competency] = Field(min_length=1)
+    probe_policy: ProbePolicy
+    # Which round this pack supplies a spine for. Empty keeps the pre-existing
+    # single-round packs valid.
+    round: Literal["", "hr", "hiring_manager", "domain_specialist"] = ""
+    # Role family, for specialist packs. Empty for round-agnostic packs.
+    role_family: str = ""
+    # The round's own rubric. When absent, the legacy four-dimension
+    # `scoring_weights` still applies, so older packs and older reports keep
+    # working unchanged.
+    rubric: PackRubric | None = None
+    # Legacy four-dimension weights. Optional since stage 13: a role pack
+    # declares `rubric` instead.
+    scoring_weights: ScoringWeights = Field(
+        default_factory=lambda: ScoringWeights(
+            technical=0.25, structure=0.25, delivery=0.25, competency=0.25
+        )
+    )
+    # Stage 11, optional. A pack without a panel roster runs single-voice and
+    # panel mode falls back to one persona.
+    panel: list[PanelRole] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _panel_refs(self) -> "Pack":
+        if not self.panel:
+            return self
+        if len(self.panel) > 3:
+            raise ValueError("a panel is at most 3 voices")
+        known = {c.id for c in self.competencies}
+        seen: set[str] = set()
+        voices: set[str] = set()
+        for role in self.panel:
+            if role.persona in seen:
+                raise ValueError(f"duplicate panel persona {role.persona}")
+            seen.add(role.persona)
+            # Distinct voices are the whole point: one voice speaks at a time
+            # and the candidate has to be able to tell who it was.
+            if role.voice in voices:
+                raise ValueError(f"panel voice {role.voice!r} is used twice")
+            voices.add(role.voice)
+            if role.competency not in known:
+                raise ValueError(
+                    f"panel role {role.persona} competency "
+                    f"{role.competency!r} is not in competencies"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _spine_refs(self) -> "Pack":
+        known = {c.id for c in self.competencies}
+        seen: set[str] = set()
+        for item in self.spine:
+            if not item.id.strip():
+                raise ValueError("spine id must be non-empty")
+            if item.id in seen:
+                raise ValueError(f"duplicate spine id {item.id}")
+            seen.add(item.id)
+            if not item.text.strip():
+                raise ValueError(f"spine {item.id} has empty text")
+            if item.competency not in known:
+                raise ValueError(
+                    f"spine {item.id} competency {item.competency!r} "
+                    "is not in competencies"
+                )
+        return self
+
+    def spine_item(self, spine_id: str) -> SpineItem:
+        for item in self.spine:
+            if item.id == spine_id:
+                return item
+        raise KeyError(spine_id)
+
+    def spine_ids(self) -> list[str]:
+        return [item.id for item in self.spine]
+
+    def rubric_dimension_ids(self) -> list[str]:
+        """Dimensions this pack assesses, legacy packs included."""
+        if self.rubric is not None:
+            return self.rubric.dimension_ids()
+        return ["technical", "structure", "delivery", "competency"]
+
+    def panel_role(self, persona: str) -> PanelRole:
+        for role in self.panel:
+            if role.persona == persona:
+                return role
+        raise KeyError(persona)
+
+
+def load_pack(pack_id: str, directory: Path | None = None) -> Pack:
+    """Load and validate `src/interview/packs/<pack_id>.yaml`."""
+    root = directory or _PACK_DIR
+    path = root / f"{pack_id}.yaml"
+    if not path.is_file():
+        raise PackLoadError(f"pack not found: {path}")
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise PackLoadError(f"invalid YAML in {path}: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise PackLoadError(f"pack {path} must be a mapping")
+    try:
+        pack = Pack.model_validate(raw)
+    except Exception as exc:
+        raise PackLoadError(f"pack {pack_id} failed validation: {exc}") from exc
+    if pack.pack_id != pack_id:
+        raise PackLoadError(
+            f"file {path.name} declares pack_id {pack.pack_id!r}, expected {pack_id!r}"
+        )
+    return pack

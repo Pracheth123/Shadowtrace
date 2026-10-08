@@ -1,0 +1,91 @@
+{
+  "session_id": "stage8_collapse",
+  "claims": [
+    {
+      "id": "c-kafka",
+      "status": "collapsed",
+      "quote": "I didn't build the Kafka pipeline. Someone else owned the two million events path and I only watched the dashboard.",
+      "turn_id": "t-collapse"
+    },
+    {
+      "id": "c-rollback",
+      "status": "held",
+      "quote": "I led a rollback of a production deploy during an incident and wrote down the timeline for the team.",
+      "turn_id": "t-rollback"
+    }
+  ],
+  "findings": [
+    {
+      "agent": "substance",
+      "dimension": "technical",
+      "summary": "The systems answer was retracted.",
+      "quote": "I didn't build the Kafka pipeline. Someone else owned the two million events path and I only watched the dashboard.",
+      "turn_id": "t-collapse",
+      "polarity": "gap"
+    },
+    {
+      "agent": "substance",
+      "dimension": "competency",
+      "summary": "The candidate addressed the ownership claim in their own words.",
+      "quote": "I led a rollback of a production deploy during an incident and wrote down the timeline for the team.",
+      "turn_id": "t-rollback",
+      "polarity": "support"
+    },
+    {
+      "agent": "substance",
+      "dimension": "technical",
+      "summary": "The answer states what was built and keeps the claim.",
+      "quote": "I led a rollback of a production deploy during an incident and wrote down the timeline for the team.",
+      "turn_id": "t-rollback",
+      "polarity": "support"
+    },
+    {
+      "agent": "structure",
+      "dimension": "structure",
+      "summary": "The answer has more than one step.",
+      "quote": "I didn't build the Kafka pipeline. Someone else owned the two million events path and I only watched the dashboard.",
+      "turn_id": "t-collapse",
+      "polarity": "support"
+    },
+    {
+      "agent": "structure",
+      "dimension": "structure",
+      "summary": "The answer has more than one step.",
+      "quote": "I led a rollback of a production deploy during an incident and wrote down the timeline for the team.",
+      "turn_id": "t-rollback",
+      "polarity": "support"
+    },
+    {
+      "agent": "delivery",
+      "dimension": "delivery",
+      "summary": "The first answer is the delivery baseline for this session.",
+      "quote": "I didn't build the Kafka pipeline. Someone else owned the two million events path and I only watched the dashboard.",
+      "turn_id": "t-collapse",
+      "polarity": "support"
+    }
+  ],
+  "dimensions": [
+    {
+      "dimension": "technical",
+      "score": 0.5,
+      "finding_count": 2
+    },
+    {
+      "dimension": "structure",
+      "score": 1.0,
+      "finding_count": 2
+    },
+    {
+      "dimension": "delivery",
+      "score": 1.0,
+      "finding_count": 1
+    },
+    {
+      "dimension": "competency",
+      "score": 1.0,
+      "finding_count": 1
+    }
+  ],
+  "elapsed_s": 0.0008,
+  "transcript_pdf": "transcript.pdf"
+}

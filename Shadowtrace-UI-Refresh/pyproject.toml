@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "interview"
+version = "0.4.0"
+# 3.11–3.13 are what the suite is run on. A venv must be created and filled by
+# the same interpreter: a 3.14 wheel installed into a 3.12 venv is what broke the
+# previous checked-in `.venv` (`No module named pydantic_core._pydantic_core`).
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "pydantic>=2.0",
+    # Stage 2 — transport
+    "fastapi>=0.111",          # WebSocket session server (stage 4 onwards, pulled in now for transport)
+    # Stage 16: POST /api/intake takes multipart uploads (resume, work sample).
+    # FastAPI needs this to parse Form/File fields; it was imported at runtime
+    # but never declared, so a clean install failed every intake request.
+    "python-multipart>=0.0.9",
+    "uvicorn[standard]>=0.29", # ASGI server for FastAPI
+    "aiofiles>=23.0",          # async file I/O for cached clip; never block the event loop
+    "pyyaml>=6.0",             # parse config/transport.yaml; thresholds must not live in code
+    # deepgram-sdk removed at stage 12. It was declared here but never
+    # installed, and the adapter caught ImportError and continued in "no-op
+    # mode" — so a session produced no transcripts and still looked successful.
+    # The Deepgram /v1/listen and /v1/speak WebSocket protocols are spoken
+    # directly over `websockets` instead, which has a stable documented wire
+    # format and can be tested offline against a local fake server
+    # (tests/test_stage12_deepgram.py). See docs/decisions/stage12_voice_providers.md.
+    "websockets>=12.0",        # Deepgram STT/TTS sockets + session plumbing
+    "numpy>=1.26",             # RMS energy for VAD; pure-Python audio math without native exts
+    # Groq LLM access via OpenAI-compatible Chat Completions API
+    # (base_url=https://api.groq.com/openai/v1). One SDK for streaming + tool calls.
+    "openai>=1.40",
+    "python-dotenv>=1.0",      # load GROQ_API_KEY from .env without committing secrets
+    # Stage 12: one validated settings object. Secrets become SecretStr, so a
+    # stray log line or JSON dump prints a mask instead of the key, and a
+    # retired model id or prod+mock combination fails at startup.
+    "pydantic-settings>=2.0",
+    # Stage 12: maintained PDF text extraction, replacing the hand-rolled
+    # routine that silently returned empty text for ordinary PDFs.
+    "pypdf>=4.2",
+]
+
+[project.optional-dependencies]
+# Test-only. `pip install -e .[test]`; production installs do not need them.
+test = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.23",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-m 'not live'"
+markers = [
+    "live: real Groq API calls (requires GROQ_API_KEY; run with: pytest -m live)",
+]

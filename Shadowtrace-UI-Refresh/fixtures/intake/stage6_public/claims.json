@@ -1,0 +1,76 @@
+{
+  "claims": [
+    {
+      "id": "c-resume-1",
+      "text": "Built a Flask middleware that records request latency and writes it to PostgreSQL.",
+      "competency": "systems",
+      "status": "untested",
+      "source": "resume",
+      "source_path": "resume",
+      "quote": "Built a Flask middleware that records request latency and writes it to PostgreSQL."
+    },
+    {
+      "id": "c-repo-1",
+      "text": "A sample project that exists as an aid to the [Python Packaging User Guide][packaging guide]'s [Tutorial on Packaging and Distributing Projects][distribution tutorial].",
+      "competency": "general",
+      "status": "untested",
+      "source": "repo",
+      "source_path": "README.md",
+      "quote": "A sample project that exists as an aid to the [Python Packaging User Guide][packaging guide]'s [Tutorial on Packaging and Distributing Projects][distribution tutorial]."
+    },
+    {
+      "id": "c-repo-2",
+      "text": "This project does not aim to cover best practices for Python project development as a whole.",
+      "competency": "general",
+      "status": "untested",
+      "source": "repo",
+      "source_path": "README.md",
+      "quote": "This project does not aim to cover best practices for Python project development as a whole."
+    },
+    {
+      "id": "c-repo-3",
+      "text": "For example, it does not provide guidance or tool recommendations for version control, documentation, or testing.",
+      "competency": "quality",
+      "status": "untested",
+      "source": "repo",
+      "source_path": "README.md",
+      "quote": "For example, it does not provide guidance or tool recommendations for version control, documentation, or testing."
+    },
+    {
+      "id": "c-repo-4",
+      "text": "The metadata for a Python project is defined in the `pyproject.toml` file, an example of which is included in this project.",
+      "competency": "general",
+      "status": "untested",
+      "source": "repo",
+      "source_path": "README.md",
+      "quote": "The metadata for a Python project is defined in the `pyproject.toml` file, an example of which is included in this project."
+    },
+    {
+      "id": "c-repo-5",
+      "text": "You should edit this file accordingly to adapt this sample project to your needs.",
+      "competency": "general",
+      "status": "untested",
+      "source": "repo",
+      "source_path": "README.md",
+      "quote": "You should edit this file accordingly to adapt this sample project to your needs."
+    },
+    {
+      "id": "c-repo-6",
+      "text": "This is the README file for the project.",
+      "competency": "general",
+      "status": "untested",
+      "source": "repo",
+      "source_path": "README.md",
+      "quote": "This is the README file for the project."
+    },
+    {
+      "id": "c-repo-7",
+      "text": "The file should use UTF-8 encoding and can be written using [reStructuredText][rst] or [markdown][md use] with the appropriate [key set][md use].",
+      "competency": "general",
+      "status": "untested",
+      "source": "repo",
+      "source_path": "README.md",
+      "quote": "The file should use UTF-8 encoding and can be written using [reStructuredText][rst] or [markdown][md use] with the appropriate [key set][md use]."
+    }
+  ]
+}

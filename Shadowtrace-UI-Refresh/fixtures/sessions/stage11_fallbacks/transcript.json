@@ -1,0 +1,115 @@
+[
+  {
+    "speaker": "agent",
+    "turn_id": "turn-opener",
+    "text": "Thanks for joining. Let's start with a technical deep-dive \u2014 tell me about a challenging project you've led recently.",
+    "t_start": 0.004506699973717332,
+    "t_end": 0.004782699979841709,
+    "utterance_id": "2696e376-91ae-451b-939e-aa60ab03a9e6"
+  },
+  {
+    "speaker": "candidate",
+    "turn_id": "stage11_fallbacks-turn-0",
+    "text": "I owned the payments pipeline from design through launch this quarter.",
+    "t_start": 0.007574999995995313,
+    "t_end": 1.2
+  },
+  {
+    "speaker": "agent",
+    "turn_id": "stage11_fallbacks-turn-0",
+    "text": "Tell me about a time you owned a project from start to finish.",
+    "t_start": 0.007318599964492023,
+    "t_end": 0.007398399990051985,
+    "utterance_id": "8bb9d345-540a-410b-816b-c0a9beffcc98"
+  },
+  {
+    "speaker": "candidate",
+    "turn_id": "stage11_fallbacks-turn-1",
+    "text": "We measured consumer lag and I decided to shed load at the edge first.",
+    "t_start": 0.009990899998228997,
+    "t_end": 2.2
+  },
+  {
+    "speaker": "agent",
+    "turn_id": "stage11_fallbacks-turn-1",
+    "text": "About \"Built a Kafka pipeline handling about two million events per second\": what decision did you make, and what would have broken it?",
+    "t_start": 0.009635399968829006,
+    "t_end": 0.009751599980518222,
+    "utterance_id": "b0bfbfaf-a3f6-4d8c-8ec9-34b237ac9822"
+  },
+  {
+    "speaker": "candidate",
+    "turn_id": "stage11_fallbacks-turn-2",
+    "text": "I disagreed with the on-call rota and wrote the reason down for the team.",
+    "t_start": 0.01233569998294115,
+    "t_end": 3.2
+  },
+  {
+    "speaker": "agent",
+    "turn_id": "stage11_fallbacks-turn-2",
+    "text": "Tell me about a time you disagreed with a teammate and what you did.",
+    "t_start": 0.01188840001123026,
+    "t_end": 0.011949800013098866,
+    "utterance_id": "6e98035e-35c9-408f-9e73-e0d8e282e907"
+  },
+  {
+    "speaker": "candidate",
+    "turn_id": "stage11_fallbacks-turn-3",
+    "text": "I pushed back in review and we agreed to split the change into two deploys.",
+    "t_start": 0.015247399976942688,
+    "t_end": 4.2
+  },
+  {
+    "speaker": "agent",
+    "turn_id": "stage11_fallbacks-turn-3",
+    "text": "About \"Led a rollback of a production deploy during an incident\": what decision did you make, and what would have broken it?",
+    "t_start": 0.01483840000582859,
+    "t_end": 0.014912899991031736,
+    "utterance_id": "0c1d6dcf-d82f-4348-a572-3c628622e700"
+  },
+  {
+    "speaker": "candidate",
+    "turn_id": "stage11_fallbacks-turn-4",
+    "text": "I made the cutover call with incomplete traces and watched the error rate.",
+    "t_start": 0.018119700020179152,
+    "t_end": 5.2
+  },
+  {
+    "speaker": "agent",
+    "turn_id": "stage11_fallbacks-turn-4",
+    "text": "Tell me about a time you made a decision with incomplete information.",
+    "t_start": 0.017724799981806427,
+    "t_end": 0.017783999966923147,
+    "utterance_id": "433400ff-12af-42d4-9a9e-5bdea9495230"
+  },
+  {
+    "speaker": "candidate",
+    "turn_id": "stage11_fallbacks-turn-5",
+    "text": "I set a rollback threshold first, then let the migration run overnight.",
+    "t_start": 0.02174709999235347,
+    "t_end": 6.2
+  },
+  {
+    "speaker": "agent",
+    "turn_id": "stage11_fallbacks-turn-5",
+    "text": "Tell me about a time you missed the mark and what you changed afterward.",
+    "t_start": 0.021374200005084276,
+    "t_end": 0.02143709996016696,
+    "utterance_id": "5c429fa6-482d-4955-861f-0c4e41651437"
+  },
+  {
+    "speaker": "candidate",
+    "turn_id": "stage11_fallbacks-turn-6",
+    "text": "I missed a rollback window and changed the release checklist the next day.",
+    "t_start": 0.023484500008635223,
+    "t_end": 7.2
+  },
+  {
+    "speaker": "agent",
+    "turn_id": "turn-closer",
+    "text": "That's all the time we have. Thanks for walking me through your work \u2014 you'll get a feedback report shortly.",
+    "t_start": 0.02303719997871667,
+    "t_end": 0.0231204999727197,
+    "utterance_id": "89af6930-da7c-4683-bb17-26ed2f5aa715"
+  }
+]

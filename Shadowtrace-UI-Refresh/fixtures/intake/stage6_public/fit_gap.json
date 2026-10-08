@@ -1,0 +1,20 @@
+{
+  "required": [
+    "Python",
+    "Flask",
+    "Kubernetes"
+  ],
+  "matched": [
+    "Python",
+    "Flask"
+  ],
+  "missing": [
+    "Kubernetes"
+  ],
+  "unsure": [],
+  "nice_to_have": [
+    "Redis"
+  ],
+  "score_pct": 67,
+  "summary": "2 of 3 required skills overlap. 1 missing. 0 unsure."
+}

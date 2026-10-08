@@ -1,0 +1,5 @@
+{
+  "id": "bench-04",
+  "words": 40,
+  "text": "The migration took 18 months. We used the strangler fig pattern, extracting services one by one starting with the least coupled ones. Payments was last because the risk was highest."
+}

@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+.venv/
+venv/
+logs/
+dist/
+*.pcm
+.env
+.env.*
+!.env.example
+
+# Candidate data: intakes, transcripts, reports, report store. Never commit.
+data/
+
+# Frontend installs and build state
+node_modules/
+*.tsbuildinfo

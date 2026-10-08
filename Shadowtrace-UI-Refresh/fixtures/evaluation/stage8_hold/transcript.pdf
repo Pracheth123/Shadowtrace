@@ -1,0 +1,31 @@
+%PDF-1.4
+1 0 obj<< /Type /Catalog /Pages 2 0 R >>endobj
+2 0 obj<< /Type /Pages /Count 1 /Kids [3 0 R] >>endobj
+3 0 obj<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources<< /Font<< /F1 5 0 R >> >> >>endobj
+4 0 obj<< /Length 250 >>
+stream
+BT
+/F1 11 Tf
+50 760 Td
+14 TL
+(Interviewer: Walk me through the pipeline you owned.) Tj
+T*
+(Candidate: I built a Kafka pipeline handling about two million events per second and we me) Tj
+T*
+(asured consumer lag before we shipped the cutover.) Tj
+T*
+ET
+endstreamendobj
+5 0 obj<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000056 00000 n 
+0000000111 00000 n 
+0000000233 00000 n 
+0000000532 00000 n 
+trailer<< /Size 6 /Root 1 0 R >>
+startxref
+600
+%%EOF

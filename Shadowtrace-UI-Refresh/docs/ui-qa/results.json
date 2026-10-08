@@ -1,0 +1,39 @@
+{
+  "checks": [
+    "Homepage loads and identifies product",
+    "Round preview works by mouse and keyboard",
+    "FAQ opens without navigating away",
+    "Homepage has no horizontal overflow at 390px",
+    "Homepage has no horizontal overflow at 320px",
+    "Homepage has no horizontal overflow at 768px",
+    "Setup labels are associated with their controls",
+    "Unavailable voice cannot be chosen with arrow keys",
+    "Setup validates missing target role",
+    "Setup requires processing consent",
+    "Live setup summary follows entered role",
+    "Setup has no horizontal overflow at 390px",
+    "Real mock backend processes intake and opens source review",
+    "Interview opens over the real WebSocket",
+    "Feedback route opens and displays labelled placeholder report",
+    "Feedback has no horizontal overflow at 390px",
+    "Dispute is stored and shown against the finding",
+    "Targeted practice opens from stored feedback",
+    "Targeted practice and coaching survive a reload",
+    "Practice attempt reaches before-and-after comparison",
+    "Completed interview appears in history",
+    "History/report route survives a reload",
+    "Authenticated transcript download works",
+    "Concurrent history panels create only one guest",
+    "Temporary API failure preserves guest identity"
+  ],
+  "a11y": {
+    "home-desktop": [],
+    "home-mobile": [],
+    "setup": [],
+    "review": [],
+    "room": [],
+    "feedback": [],
+    "practice": []
+  },
+  "errors": []
+}

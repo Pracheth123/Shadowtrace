@@ -1,0 +1,5 @@
+{
+  "id": "bench-09",
+  "words": 42,
+  "text": "The dead letter queue handled poison pill messages. We'd retry 3 times with exponential backoff and then park the message in the DLQ with the original error attached. Ops could replay or discard from there."
+}

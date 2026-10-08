@@ -1,0 +1,93 @@
+[
+  {
+    "speaker": "agent",
+    "turn_id": "turn-opener",
+    "text": "Thanks for joining. Let's start with a technical deep-dive \u2014 tell me about a challenging project you've led recently.",
+    "t_start": 0.0019462090021988843,
+    "t_end": 0.002006124999752501,
+    "utterance_id": "4d4d2f88-038b-4bf3-9b86-2d0c48afa7c6"
+  },
+  {
+    "speaker": "candidate",
+    "turn_id": "turn-valid-0",
+    "text": "I owned the payments pipeline from design through launch today.",
+    "t_start": 0.0032527500006835908,
+    "t_end": 1.2
+  },
+  {
+    "speaker": "agent",
+    "turn_id": "turn-valid-0",
+    "text": "Tell me about a time you owned a project from start to finish.",
+    "t_start": 0.00306208400070318,
+    "t_end": 0.0030973339999036398,
+    "utterance_id": "d3fe0dbc-f960-428d-90c9-c83af4ce49c3"
+  },
+  {
+    "speaker": "candidate",
+    "turn_id": "turn-valid-1",
+    "text": "We measured consumer lag and I decided to shed load at the edge.",
+    "t_start": 0.004179166000540135,
+    "t_end": 1.2
+  },
+  {
+    "speaker": "agent",
+    "turn_id": "turn-valid-1",
+    "text": "About \"Built a Kafka pipeline handling about two million events per second\": what decision did you make, and what would have broken it?",
+    "t_start": 0.004103541999938898,
+    "t_end": 0.004154541999014327,
+    "utterance_id": "fb198d53-ffe8-47b7-93d8-32909f83550b"
+  },
+  {
+    "speaker": "candidate",
+    "turn_id": "turn-valid-2",
+    "text": "I disagreed with the on-call plan and wrote the reason down for the team.",
+    "t_start": 0.00549183300245204,
+    "t_end": 1.2
+  },
+  {
+    "speaker": "agent",
+    "turn_id": "turn-valid-2",
+    "text": "Tell me about a time you disagreed with a teammate and what you did.",
+    "t_start": 0.005290584002068499,
+    "t_end": 0.005324334000761155,
+    "utterance_id": "fbc58aca-f26d-4460-b428-2cb5157af0ab"
+  },
+  {
+    "speaker": "candidate",
+    "turn_id": "turn-valid-3",
+    "text": "I made the cutover call with incomplete traces and we watched the error rate.",
+    "t_start": 0.006301041001279373,
+    "t_end": 1.2
+  },
+  {
+    "speaker": "agent",
+    "turn_id": "turn-valid-3",
+    "text": "About \"Led a rollback of a production deploy during an incident\": what decision did you make, and what would have broken it?",
+    "t_start": 0.0061223340017022565,
+    "t_end": 0.006161125002108747,
+    "utterance_id": "3757a045-a3c8-4454-a69e-14b1d96eb05f"
+  },
+  {
+    "speaker": "candidate",
+    "turn_id": "turn-stale",
+    "text": "I don't know, I was wrong about that migration entirely.",
+    "t_start": 0.007250875001773238,
+    "t_end": 1.2
+  },
+  {
+    "speaker": "agent",
+    "turn_id": "turn-stale",
+    "text": "That's a fair gap. Tell me about a time you made a decision with incomplete information.",
+    "t_start": 0.007037209001282463,
+    "t_end": 0.007067834001645679,
+    "utterance_id": "7802b6ea-6f3d-4261-94c8-4f9494cd3efc"
+  },
+  {
+    "speaker": "agent",
+    "turn_id": "turn-closer",
+    "text": "That's all the time we have. Thanks for walking me through your work \u2014 you'll get a feedback report shortly.",
+    "t_start": 0.007230625000374857,
+    "t_end": 0.007262041999638313,
+    "utterance_id": "96963d96-c9a1-4ce7-b823-8ed7fc5b3abc"
+  }
+]

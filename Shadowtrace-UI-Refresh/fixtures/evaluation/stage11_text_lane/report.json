@@ -1,0 +1,121 @@
+{
+  "session_id": "stage11_text_lane",
+  "claims": [
+    {
+      "id": "c-kafka",
+      "status": "untested",
+      "quote": "",
+      "turn_id": null
+    },
+    {
+      "id": "c-rollback",
+      "status": "untested",
+      "quote": "",
+      "turn_id": null
+    }
+  ],
+  "findings": [
+    {
+      "agent": "substance",
+      "dimension": "technical",
+      "summary": "The answer names a decision or a measurement.",
+      "quote": "About \"Built a Kafka pipeline handling about two million events per second\": what decision did you make, and what would have broken it?",
+      "turn_id": "stage11_text_lane-turn-1",
+      "polarity": "support"
+    },
+    {
+      "agent": "substance",
+      "dimension": "technical",
+      "summary": "The answer names a decision or a measurement.",
+      "quote": "Tell me about a time you missed the mark and what you changed afterward.",
+      "turn_id": "stage11_text_lane-turn-5",
+      "polarity": "support"
+    },
+    {
+      "agent": "structure",
+      "dimension": "structure",
+      "summary": "The answer has more than one step.",
+      "quote": "Tell me about a time you owned a project from start to finish.",
+      "turn_id": "stage11_text_lane-turn-0",
+      "polarity": "support"
+    },
+    {
+      "agent": "structure",
+      "dimension": "structure",
+      "summary": "The answer has more than one step.",
+      "quote": "About \"Built a Kafka pipeline handling about two million events per second\": what decision did you make, and what would have broken it?",
+      "turn_id": "stage11_text_lane-turn-1",
+      "polarity": "support"
+    },
+    {
+      "agent": "structure",
+      "dimension": "structure",
+      "summary": "The answer has more than one step.",
+      "quote": "Tell me about a time you disagreed with a teammate and what you did.",
+      "turn_id": "stage11_text_lane-turn-2",
+      "polarity": "support"
+    },
+    {
+      "agent": "structure",
+      "dimension": "structure",
+      "summary": "The answer has more than one step.",
+      "quote": "About \"Led a rollback of a production deploy during an incident\": what decision did you make, and what would have broken it?",
+      "turn_id": "stage11_text_lane-turn-3",
+      "polarity": "support"
+    },
+    {
+      "agent": "structure",
+      "dimension": "structure",
+      "summary": "The answer has more than one step.",
+      "quote": "Tell me about a time you made a decision with incomplete information.",
+      "turn_id": "stage11_text_lane-turn-4",
+      "polarity": "support"
+    },
+    {
+      "agent": "structure",
+      "dimension": "structure",
+      "summary": "The answer has more than one step.",
+      "quote": "Tell me about a time you missed the mark and what you changed afterward.",
+      "turn_id": "stage11_text_lane-turn-5",
+      "polarity": "support"
+    },
+    {
+      "agent": "structure",
+      "dimension": "structure",
+      "summary": "The answer has more than one step.",
+      "quote": "I missed a rollback window and changed the release checklist the next day.",
+      "turn_id": "stage11_text_lane-turn-6",
+      "polarity": "support"
+    }
+  ],
+  "dimensions": [
+    {
+      "dimension": "technical",
+      "score": 1.0,
+      "finding_count": 2,
+      "assessed": true
+    },
+    {
+      "dimension": "structure",
+      "score": 1.0,
+      "finding_count": 7,
+      "assessed": true
+    },
+    {
+      "dimension": "delivery",
+      "score": 0.0,
+      "finding_count": 0,
+      "assessed": false
+    },
+    {
+      "dimension": "competency",
+      "score": 0.5,
+      "finding_count": 0,
+      "assessed": true
+    }
+  ],
+  "elapsed_s": 0.0098,
+  "lane": "text",
+  "transcript_pdf": "transcript.pdf",
+  "intensity_note": "Intensity was not recorded. Scores are not adjusted for intensity."
+}

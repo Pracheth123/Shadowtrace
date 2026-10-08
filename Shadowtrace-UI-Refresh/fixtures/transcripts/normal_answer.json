@@ -1,0 +1,34 @@
+{
+  "description": "Normal 4-second answer about a Kafka pipeline.",
+  "utterances": [
+    {
+      "id": "utt-001",
+      "duration_ms": 4200,
+      "gap_after_ms": 300,
+      "words": [
+        {"word": "I",        "start_ms": 100,  "end_ms": 160},
+        {"word": "built",    "start_ms": 165,  "end_ms": 240},
+        {"word": "the",      "start_ms": 245,  "end_ms": 280},
+        {"word": "pipeline", "start_ms": 285,  "end_ms": 390},
+        {"word": "using",    "start_ms": 395,  "end_ms": 450},
+        {"word": "Kafka",    "start_ms": 455,  "end_ms": 560},
+        {"word": "and",      "start_ms": 565,  "end_ms": 600},
+        {"word": "it",       "start_ms": 605,  "end_ms": 635},
+        {"word": "handled",  "start_ms": 640,  "end_ms": 720},
+        {"word": "about",    "start_ms": 725,  "end_ms": 780},
+        {"word": "two",      "start_ms": 785,  "end_ms": 830},
+        {"word": "million",  "start_ms": 835,  "end_ms": 920},
+        {"word": "events",   "start_ms": 925,  "end_ms": 1000},
+        {"word": "per",      "start_ms": 1005, "end_ms": 1040},
+        {"word": "second",   "start_ms": 1045, "end_ms": 1120}
+      ],
+      "revisions": [
+        {"at_ms": 280,  "text": "I built"},
+        {"at_ms": 480,  "text": "I built the pipeline using"},
+        {"at_ms": 680,  "text": "I built the pipeline using Kafka and it"},
+        {"at_ms": 900,  "text": "I built the pipeline using Kafka and it handled about"},
+        {"at_ms": 1120, "text": "I built the pipeline using Kafka and it handled about two million events per second"}
+      ]
+    }
+  ]
+}

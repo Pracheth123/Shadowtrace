@@ -1,0 +1,45 @@
+pack_id: specialist-operations
+title: Operations specialist round
+round: domain_specialist
+role_family: operations
+# The deepest round, and the one claim interrogation belongs in.
+time_budget_s: 720
+spine:
+  - id: bottleneck
+    text: "Tell me about a process you improved. Where was the real bottleneck?"
+    competency: practical_application
+  - id: evidence
+    text: "How did you establish that was the bottleneck rather than assume it?"
+    competency: domain_knowledge
+  - id: capacity
+    text: "Walk me through how you planned capacity or resources for it."
+    competency: domain_knowledge
+  - id: tradeoff
+    text: "What got worse when you made that change?"
+    competency: tradeoff_reasoning
+competencies:
+  - id: domain_knowledge
+    label: Domain knowledge
+  - id: practical_application
+    label: Practical application
+  - id: tradeoff_reasoning
+    label: Tradeoff reasoning
+probe_policy:
+  max_depth: 4
+  seconds_per_spine: 110
+  min_probe_s: 50
+rubric:
+  version: specialist.operations.v1
+  dimensions:
+    - id: domain_knowledge
+      label: Operations knowledge
+      weight: 0.40
+      kind: knowledge
+    - id: practical_application
+      label: Process improvement in practice
+      weight: 0.35
+      kind: reasoning
+    - id: tradeoff_reasoning
+      label: Resource and process tradeoffs
+      weight: 0.25
+      kind: reasoning

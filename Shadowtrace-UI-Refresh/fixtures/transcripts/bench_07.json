@@ -1,0 +1,5 @@
+{
+  "id": "bench-07",
+  "words": 40,
+  "text": "Connection pooling brought P99 from 800 milliseconds down to under 200. We also added read replicas for the reporting queries that were hammering the primary. Together that was the 40 percent improvement."
+}

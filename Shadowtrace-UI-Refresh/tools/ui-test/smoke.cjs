@@ -1,0 +1,90 @@
+// Offline browser journey: real HTTP/WebSocket transport, explicitly mocked AI.
+const { chromium } = require('playwright');
+const { spawn } = require('node:child_process');
+const fs = require('node:fs'), path = require('node:path'), os = require('node:os'), assert = require('node:assert/strict');
+const root = path.resolve(__dirname, '../..');
+const out = path.join(root, 'logs', 'ui-smoke'); fs.mkdirSync(out, {recursive:true});
+const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'shadowtrace-ui-'));
+const log = (name) => fs.openSync(path.join(temp, name + '.log'), 'w');
+const python = process.env.UI_TEST_PYTHON || path.join(root, '.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
+const production = process.env.UI_TEST_PRODUCTION === '1';
+const APP_URL = production ? 'http://127.0.0.1:8000' : APP_URL;
+const axePath = process.env.AXE_SCRIPT_PATH || require.resolve('axe-core/axe.min.js');
+const env = {...process.env, APP_ENV:'test', ALLOW_MOCK_PROVIDERS:'1', MOCK_LLM:'1', GROQ_API_KEY:'', DEEPGRAM_API_KEY:'', GUEST_RETENTION_DAYS:'0', PYTHONPATH:path.join(root,'src'), DATA_DIR:path.join(temp,'data'), SESSION_LOG_DIR:path.join(temp,'logs'), REPORT_DIR:path.join(temp,'reports'), INTAKE_DIR:path.join(temp,'intake'), STORE_PATH:path.join(temp,'store.sqlite')};
+// Static mount is only a test harness. Production still needs its reverse proxy.
+const args = production ? ['-c', `from interview import server; from fastapi.staticfiles import StaticFiles; import uvicorn; server.app.router.routes = [r for r in server.app.router.routes if getattr(r, 'path', None) != '/']; server.app.mount('/', StaticFiles(directory=${JSON.stringify(path.join(root,'client/dist'))}, html=True)); uvicorn.run(server.app, host='127.0.0.1', port=8000)`] : ['-m','uvicorn','interview.server:app','--host','127.0.0.1','--port','8000'];
+const backend = spawn(python, args, {cwd:root,env,stdio:['ignore',log('api'),log('api-error')]});
+const vite = production ? null : spawn(process.execPath,[path.join(root,'client/node_modules/vite/bin/vite.js'),'--host','127.0.0.1'],{cwd:path.join(root,'client'),env:{...process.env,VITE_WS_HOST:'127.0.0.1:8000'},stdio:['ignore',log('vite'),log('vite-error')]});
+for (const child of [backend,vite].filter(Boolean)) child.on('error',error=>console.error('Server launch failed:',error.message));
+let browser;const results={checks:[],a11y:{},errors:[]};
+async function check(name,fn){await fn();results.checks.push(name);console.log('PASS',name);}
+async function a11y(page,name){await page.addScriptTag({path:axePath});const r=await page.evaluate(()=>axe.run(document,{runOnly:{type:'tag',values:['wcag2a','wcag2aa','wcag21aa']}}));results.a11y[name]=r.violations.map(v=>({id:v.id,impact:v.impact,description:v.description,nodes:v.nodes.map(n=>({target:n.target,summary:n.failureSummary})).slice(0,12)}));console.log('A11Y',name,JSON.stringify(results.a11y[name]));}
+(async()=>{try{
+ for(const url of [APP_URL+'/', 'http://127.0.0.1:8000/health']){let ready=false;for(let i=0;i<80;i++){try{if((await fetch(url)).ok){ready=true;break;}}catch{}await new Promise(r=>setTimeout(r,250));}assert(ready,url);}
+ browser=await chromium.launch({executablePath:process.env.CHROMIUM_PATH||undefined,args:process.env.CHROMIUM_PATH ?['--no-sandbox','--disable-dev-shm-usage','--no-zygote','--single-process','--in-process-gpu','--use-gl=angle','--use-angle=swiftshader','--enable-unsafe-swiftshader'] : [],headless:true});
+ const page=await browser.newPage({viewport:{width:1440,height:1000}});
+ page.on('pageerror',e=>results.errors.push(e.message));
+ await page.goto(APP_URL);
+ await check('Homepage loads and identifies product',async()=>{await page.getByRole('heading',{name:/You’ve done/}).waitFor();assert.match(await page.title(),/Shadowtrace/);});
+ await page.screenshot({path:out+'/homepage-desktop.png',fullPage:true});await page.screenshot({path:out+'/homepage-hero.png'});await a11y(page,'home-desktop');
+ await check('Round preview works by mouse and keyboard',async()=>{await page.getByRole('tab',{name:/Hiring manager/}).click();await page.getByRole('heading',{name:'Go beyond the job title.'}).waitFor();await page.getByRole('tab',{name:/Hiring manager/}).press('ArrowRight');await page.getByRole('heading',{name:'Explain the work behind the claim.'}).waitFor();});
+ await check('FAQ opens without navigating away',async()=>{await page.getByText('Do I need a GitHub repository?',{exact:true}).click();assert(await page.getByText('No. Start with a resume',{exact:false}).isVisible());});
+ for(const width of [390,320,768]){await page.setViewportSize({width,height:844});await page.goto(APP_URL);await check(`Homepage has no horizontal overflow at ${width}px`,async()=>{const overflow=await page.evaluate(()=>[...document.querySelectorAll('body *')].filter(e=>{const r=e.getBoundingClientRect();return r.right>innerWidth+1||r.left< -1;}).map(e=>({tag:e.tagName,class:e.className,width:e.getBoundingClientRect().width,left:e.getBoundingClientRect().left,right:e.getBoundingClientRect().right})).slice(0,10));if(overflow.length)console.log('OVERFLOW',width,JSON.stringify(overflow));assert(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),`Overflow at ${width}`);});if(width===390){await page.screenshot({path:out+'/homepage-mobile.png',fullPage:true});await a11y(page,'home-mobile');}}
+ await page.setViewportSize({width:1440,height:1000});await page.getByRole('button',{name:'Prepare my interview',exact:true}).click();
+ await page.getByText('Development mode.',{exact:true}).waitFor();
+ await check('Setup labels are associated with their controls',async()=>{assert.equal(await page.getByLabel('Target role',{exact:true}).count(),1);assert.equal(await page.getByLabel('Or describe your background',{exact:true}).count(),1);});
+ await check('Unavailable voice cannot be chosen with arrow keys',async()=>{const type=page.getByRole('radio',{name:'Type',exact:true});await type.press('ArrowLeft');assert.equal(await type.getAttribute('aria-checked'),'true');assert(!(await page.getByRole('radio',{name:'Speak',exact:true}).isEnabled()));});
+ await page.screenshot({path:out+'/setup-desktop.png',fullPage:true});await a11y(page,'setup');
+ await check('Setup validates missing target role',async()=>{await page.getByRole('button',{name:'Prepare my interview',exact:true}).click();await page.getByRole('alert').getByText('Add the role you are preparing for.').waitFor();});
+ await page.getByLabel('Target role',{exact:true}).fill('Backend engineer');
+ await page.getByLabel('Or describe your background',{exact:true}).fill('I built a Python reconciliation service for payment settlements. I designed the PostgreSQL schema, wrote retry logic and worked with the support team on the launch.');
+ await page.getByLabel('Seniority',{exact:true}).selectOption('junior');await page.getByRole('radio',{name:'Coach',exact:true}).click();
+ await check('Setup requires processing consent',async()=>{await page.getByRole('button',{name:'Prepare my interview',exact:true}).click();await page.getByRole('alert').getByText('Please read and confirm how your documents and speech are processed.').waitFor();});
+ await page.getByRole('checkbox').check();
+ await check('Live setup summary follows entered role',async()=>{await page.getByRole('complementary',{name:'Your interview summary'}).getByRole('heading',{name:'Backend engineer'}).waitFor();});
+ await page.setViewportSize({width:390,height:844});await check('Setup has no horizontal overflow at 390px',async()=>assert(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)));await page.screenshot({path:out+'/setup-mobile.png',fullPage:true});await page.setViewportSize({width:1440,height:1000});
+ await page.getByRole('button',{name:'Prepare my interview',exact:true}).click();
+ await check('Real mock backend processes intake and opens source review',async()=>{await page.getByRole('heading',{name:'Your experience, in focus.'}).waitFor({timeout:20000});await page.getByRole('heading',{name:'Check what the interviewers will ask about'}).waitFor();});
+ await page.screenshot({path:out+'/source-review.png',fullPage:true});await a11y(page,'review');
+ await page.getByRole('button',{name:'Save and start the interview'}).click();
+ await check('Interview opens over the real WebSocket',async()=>{await page.getByRole('heading',{name:'Interview in progress'}).waitFor();await page.getByLabel('Your answer',{exact:true}).waitFor();await page.waitForFunction(()=>document.querySelector('.question-text')?.textContent && !document.querySelector('.question-text')?.textContent.includes('Waiting'));});
+ await page.screenshot({path:out+'/interview-room.png',fullPage:true});await a11y(page,'room');
+ for(let i=0;i<40;i++){
+  if(await page.getByRole('button',{name:'See your feedback',exact:true}).isVisible())break;
+  const answer=page.getByLabel('Your answer',{exact:true});if(!(await answer.isEnabled()))break;
+  const count=await page.locator('.transcript-line[data-speaker="you"]').count();
+  await answer.fill(`I owned the Python reconciliation service. I chose PostgreSQL for transactions, added idempotency keys to prevent duplicate settlements, and checked launch ${i+1} with support.`);
+  await page.getByRole('button',{name:'Send answer',exact:true}).click();
+  await page.waitForFunction(c=>document.querySelectorAll('.transcript-line[data-speaker="you"]').length>c,count,{timeout:10000});
+  await page.waitForTimeout(160);
+ }
+ console.log('ANSWER_COUNT',await page.locator('.transcript-line[data-speaker="you"]').count());
+ if(await page.getByRole('button',{name:'See your feedback',exact:true}).isVisible())await page.getByRole('button',{name:'See your feedback',exact:true}).click();else await page.getByRole('button',{name:'End interview',exact:true}).click();
+ await check('Feedback route opens and displays labelled placeholder report',async()=>{await page.getByRole('heading',{name:'Your answers, in perspective.'}).waitFor();await page.getByText('this report was produced by a placeholder.',{exact:false}).waitFor({timeout:20000});assert.match(page.url(),/#results\//);});
+ await page.screenshot({path:out+'/feedback.png',fullPage:true});await a11y(page,'feedback');
+ const originalReport=page.url();
+ await page.setViewportSize({width:390,height:844});await check('Feedback has no horizontal overflow at 390px',async()=>assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)));await page.screenshot({path:out+'/feedback-mobile.png',fullPage:true});await page.setViewportSize({width:1440,height:1000});
+ await page.getByRole('button',{name:'This feedback seems wrong',exact:true}).first().click();
+ await page.getByLabel('What is wrong?',{exact:false}).fill('I described my individual contribution in the next answer.');
+ await page.getByRole('button',{name:'Dispute this finding',exact:true}).click();
+ await check('Dispute is stored and shown against the finding',async()=>{await page.getByText('You disputed this',{exact:true}).first().waitFor();});
+ await page.getByRole('button',{name:'Withdraw dispute',exact:true}).click();await page.getByText('Dispute withdrawn',{exact:true}).first().waitFor();
+ await page.getByRole('button',{name:'Practise this gap',exact:true}).first().click();await page.getByRole('button',{name:'Set up practice',exact:true}).click();
+ await check('Targeted practice opens from stored feedback',async()=>{await page.getByRole('heading',{name:/Practise:/}).waitFor();assert.match(page.url(),/#practice\//);assert(!(await page.getByRole('radio',{name:'Speak',exact:true}).isEnabled()));});
+ const practiceUrl=page.url();await page.getByRole('button',{name:'Show the checklist',exact:true}).click();await page.getByText('Opening it labels your next attempt',{exact:false}).waitFor();await page.waitForTimeout(5500);
+ await page.screenshot({path:out+'/practice.png',fullPage:true});await a11y(page,'practice');
+ await page.reload();await check('Targeted practice and coaching survive a reload',async()=>{await page.getByRole('heading',{name:/Practise:/}).waitFor();await page.getByRole('button',{name:'Start coached attempt',exact:true}).waitFor();});
+ await page.getByRole('checkbox').check();await page.getByRole('button',{name:'Start coached attempt',exact:true}).click();await page.getByLabel('Your answer',{exact:true}).waitFor();await page.waitForFunction(()=>document.querySelector('.question-text')?.textContent&&!document.querySelector('.question-text')?.textContent.includes('Waiting'));
+ await page.getByLabel('Your answer',{exact:true}).fill('I owned the Python reconciliation service. I chose PostgreSQL for transactional consistency, added idempotency keys, and checked settlement mismatches with the support team before launch.');await page.getByRole('button',{name:'Send answer',exact:true}).click();await page.waitForFunction(()=>document.querySelectorAll('.transcript-line[data-speaker="you"]').length>0);await page.getByRole('button',{name:'End interview',exact:true}).click();await page.getByText('this report was produced by a placeholder.',{exact:false}).waitFor({timeout:20000});await page.goto(practiceUrl);
+ await check('Practice attempt reaches before-and-after comparison',async()=>{await page.getByRole('heading',{name:'Before and after',exact:true}).waitFor();});
+ await page.goto(originalReport);await page.getByText('this report was produced by a placeholder.',{exact:false}).waitFor();
+ 
+ await page.getByRole('tab',{name:'History',exact:true}).click();await check('Completed interview appears in history',async()=>{await page.getByRole('cell').filter({hasText:'Backend engineer'}).first().waitFor();});
+ await page.reload();await check('History/report route survives a reload',async()=>{await page.getByRole('heading',{name:'Your answers, in perspective.'}).waitFor();});
+ // Reload defaults to report. Authenticated downloads must retrieve stored data.
+ const downloadButton=page.getByRole('button',{name:'Transcript',exact:true});if(await downloadButton.count())await check('Authenticated transcript download works',async()=>{const pending=page.waitForEvent('download');await downloadButton.click();const dl=await pending;assert((await dl.path()));});
+ const fresh=page;await fresh.evaluate(()=>localStorage.clear());let created=0;fresh.on('request',r=>{if(r.url().endsWith('/api/guest')&&r.method()==='POST')created++;});await fresh.goto(APP_URL+'/#history');await fresh.reload();await fresh.getByText('No interviews yet.',{exact:false}).waitFor();
+ await check('Concurrent history panels create only one guest',async()=>assert.equal(created,1));
+ const token=await fresh.evaluate(()=>localStorage.getItem('shadowtrace.guest_token'));assert(token);await fresh.route('**/api/me',r=>r.fulfill({status:503,contentType:'application/json',body:'{"error":"Temporary test outage"}'}));await fresh.reload();await fresh.getByText('Temporary test outage',{exact:true}).first().waitFor();await check('Temporary API failure preserves guest identity',async()=>assert.equal(await fresh.evaluate(()=>localStorage.getItem('shadowtrace.guest_token')),token));
+ for(const [name,violations] of Object.entries(results.a11y))assert.equal(violations.length,0,'Accessibility: '+name);assert.deepEqual(results.errors,[]);console.log('PAGE_ERRORS',JSON.stringify(results.errors));
+}finally{fs.writeFileSync(out+'/results.json',JSON.stringify(results,null,2));if(browser)await browser.close();backend.kill();vite?.kill();}})().catch(e=>{console.error(e);process.exitCode=1});
