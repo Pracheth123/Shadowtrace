@@ -72,7 +72,7 @@ export function RadioGroupPrimitive({
 
   const move = useCallback(
     (from: string, delta: number) => {
-      const list = order.current;
+      const list = order.current.filter((item) => !nodes.current.get(item)?.disabled);
       if (list.length === 0) return;
       const next =
         list[(list.indexOf(from) + delta + list.length) % list.length];

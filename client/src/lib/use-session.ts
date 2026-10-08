@@ -7,7 +7,7 @@ import {
   type CaptureHandle,
 } from "@/lib/audio-capture";
 import { PlaybackQueue, type ChunkMeta } from "@/lib/audio-playback";
-import { currentToken, ensureGuest } from "@/lib/api";
+import { currentToken, ensureGuest, HTTP_BASE } from "@/lib/api";
 
 /**
  * The live session socket, lifted out of the old single-file App.
@@ -24,8 +24,8 @@ import { currentToken, ensureGuest } from "@/lib/api";
  *   - while push-to-talk is on, a barge-in reports whether the key was held,
  *     so the server can ignore room noise.
  *
- * Env contract is untouched (`VITE_WS_HOST`): switching to `VITE_API_URL` is
- * part of the separate, still-unapproved deployment task.
+ * HTTP and WebSocket share the VITE_WS_HOST override; production defaults to
+ * the page origin so a reverse proxy can expose both behind one HTTPS host.
  *
  * Stage 14 connects the voice path that previously did not exist:
  *
@@ -38,8 +38,7 @@ import { currentToken, ensureGuest } from "@/lib/api";
  *   - barge-in stopping local playback as well as provider synthesis.
  */
 
-const WS_HOST = import.meta.env.VITE_WS_HOST || `${location.hostname}:8000`;
-const WS_URL = `${location.protocol === "https:" ? "wss://" : "ws://"}${WS_HOST}/ws/session`;
+const WS_URL = `${HTTP_BASE.replace(/^http/, "ws")}/ws/session`;
 
 /** How long the backend may take to wake before we say so on screen. */
 const WAKING_AFTER_MS = 2500;

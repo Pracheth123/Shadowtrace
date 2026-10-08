@@ -1,5 +1,0 @@
-{
-  "id": "bench-05",
-  "words": 44,
-  "text": "For the SLA we had a target of 99.95 percent. We measured it with Prometheus recording the success rate of every API endpoint over a rolling 30 day window and reported it in a weekly ops review."
-}

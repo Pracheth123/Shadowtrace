@@ -1,5 +1,0 @@
-{
-  "id": "bench-11",
-  "words": 38,
-  "text": "Schema evolution was managed with Avro and a schema registry. Producers had to register schemas and consumers used backward-compatible reads so we could deploy producers and consumers independently."
-}

@@ -85,7 +85,11 @@ export type ResultsDashboardProps = {
 
 export function ResultsDashboard({ sessionId, onOpenSession, onOpenPractice, onStartAnother }: ResultsDashboardProps) {
   return (
-    <div className="mx-auto flex w-full max-w-3xl flex-col gap-6">
+    <div className="results-layout mx-auto flex w-full flex-col gap-6">
+      <header className="results-heading">
+        <div><p className="eyebrow">KEEP THE CONVERSATION GOING</p><h1>{sessionId ? "Your answers, in perspective." : "Every attempt has a next step."}</h1><p>{sessionId ? "Review the evidence. Choose one thing to work on next." : "Revisit your interviews, compare attempts, and find your next practice."}</p></div>
+        <Button variant="outline" onClick={onStartAnother}><RotateCwIcon /> New interview</Button>
+      </header>
       <Tabs defaultValue={sessionId ? "report" : "history"}>
         <TabsList>
           {sessionId && <TabsTab value="report">This session</TabsTab>}

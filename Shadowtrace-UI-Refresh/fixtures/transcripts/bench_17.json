@@ -1,5 +1,0 @@
-{
-  "id": "bench-17",
-  "words": 48,
-  "text": "I chose Kafka over RabbitMQ because we needed replay capability and the ability to have multiple independent consumer groups reading the same topic at different rates. RabbitMQ's queue model doesn't support that natively."
-}

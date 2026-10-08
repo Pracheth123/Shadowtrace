@@ -1,13 +1,17 @@
 import { forwardRef } from "react";
 
 import { cn } from "@/lib/utils";
+import { useFieldId } from "@/components/ui/field";
 
 export type InputProps = React.ComponentPropsWithoutRef<"input">;
 
 export const Input = forwardRef<HTMLInputElement, InputProps>(
-  ({ className, type = "text", ...props }, ref) => (
+  ({ className, type = "text", id, ...props }, ref) => {
+    const fieldId = useFieldId();
+    return (
     <input
       ref={ref}
+      id={id ?? fieldId ?? undefined}
       type={type}
       className={cn(
         "h-10 w-full rounded-md border border-input bg-card px-3 text-sm text-foreground transition-[border-color,box-shadow]",
@@ -19,6 +23,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
       )}
       {...props}
     />
-  ),
+    );
+  },
 );
 Input.displayName = "Input";

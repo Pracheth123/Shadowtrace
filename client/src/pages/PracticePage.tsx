@@ -17,6 +17,7 @@ import {
 import { toastManager } from "@/components/ui/toast";
 import {
   ApiError,
+  HTTP_BASE,
   OUTCOME_LABEL,
   api,
   jsonBody,
@@ -54,6 +55,16 @@ export function PracticePage({ practiceId, onStart, onOpenSession, onOpenPractic
   const [lane, setLane] = useState<Lane>("text");
   const [consent, setConsent] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [voiceAvailable, setVoiceAvailable] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    fetch(`${HTTP_BASE}/health`)
+      .then((response) => response.ok ? response.json() : null)
+      .then((health) => { if (active) setVoiceAvailable(health?.providers?.voice === "deepgram"); })
+      .catch(() => { if (active) setVoiceAvailable(false); });
+    return () => { active = false; };
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -109,8 +120,9 @@ export function PracticePage({ practiceId, onStart, onOpenSession, onOpenPractic
   };
 
   return (
-    <div className="mx-auto flex w-full max-w-2xl flex-col gap-5">
-      <header className="flex flex-col gap-1">
+    <div className="mx-auto flex w-full max-w-4xl flex-col gap-5">
+      <header className="workspace-title">
+        <p className="eyebrow">ONE GAP. A FOCUSED ATTEMPT.</p>
         <div className="flex items-center justify-between gap-2">
           <h1>Practise: {practice.dimension_label}</h1>
           <Button variant="ghost" size="sm" onClick={onBack}>
@@ -188,7 +200,7 @@ export function PracticePage({ practiceId, onStart, onOpenSession, onOpenPractic
           <CardTitle className="text-base">Start an attempt</CardTitle>
           <CardDescription>
             A short session with the same interviewer role: two core questions on this competency, with at most two
-            follow-ups each. Text and voice both work.
+            follow-ups each. {voiceAvailable ? "Choose typing or speaking." : "Typing is ready. Speaking requires a configured speech provider."}
           </CardDescription>
         </CardHeader>
         <CardPanel className="flex flex-col gap-3">
@@ -202,7 +214,7 @@ export function PracticePage({ practiceId, onStart, onOpenSession, onOpenPractic
             <RadioPrimitive.Root className={itemClassName} value="text">
               Type
             </RadioPrimitive.Root>
-            <RadioPrimitive.Root className={itemClassName} value="voice">
+            <RadioPrimitive.Root className={itemClassName} value="voice" disabled={!voiceAvailable}>
               Speak
             </RadioPrimitive.Root>
           </RadioGroupPrimitive>

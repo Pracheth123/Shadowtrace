@@ -7,7 +7,7 @@
  * in the UI too: one browser, no recovery, and clearing site data loses access.
  */
 
-const WS_HOST = import.meta.env.VITE_WS_HOST || `${location.hostname}:8000`;
+const WS_HOST = import.meta.env.VITE_WS_HOST || (import.meta.env.DEV ? `${location.hostname}:8000` : location.host);
 export const HTTP_BASE = `${location.protocol}//${WS_HOST}`;
 
 const TOKEN_KEY = "shadowtrace.guest_token";
@@ -47,9 +47,17 @@ function writeToken(token: string) {
 }
 
 let memoryToken = "";
+let guestRequest: Promise<string> | null = null;
 
 /** The guest token, creating a guest on first use. */
-export async function ensureGuest(): Promise<string> {
+export function ensureGuest(): Promise<string> {
+  // Several dashboard panels load together. They must share one identity
+  // request rather than racing to create unrelated guests on a fresh browser.
+  if (!guestRequest) guestRequest = resolveGuest().finally(() => { guestRequest = null; });
+  return guestRequest;
+}
+
+async function resolveGuest(): Promise<string> {
   const existing = memoryToken || readToken();
   if (existing) {
     const check = await fetch(`${HTTP_BASE}/api/me`, {
@@ -59,6 +67,9 @@ export async function ensureGuest(): Promise<string> {
       memoryToken = existing;
       return existing;
     }
+    // A transient server error must never replace a valid guest key and make
+    // the browser lose access to its previous interviews.
+    if (check.status !== 401) throw new ApiError(check.status, await safeJson(check));
   }
   const response = await fetch(`${HTTP_BASE}/api/guest`, { method: "POST" });
   if (!response.ok) throw new ApiError(response.status, await safeJson(response));

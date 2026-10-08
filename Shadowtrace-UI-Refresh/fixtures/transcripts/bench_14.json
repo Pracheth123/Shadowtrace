@@ -1,5 +1,0 @@
-{
-  "id": "bench-14",
-  "words": 42,
-  "text": "The load balancer used consistent hashing to route requests from the same client to the same instance which helped with session affinity. We had to be careful that hot users didn't overload a single node."
-}

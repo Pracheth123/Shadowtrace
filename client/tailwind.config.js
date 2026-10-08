@@ -1,18 +1,3 @@
-/**
- * Panel AI — Tailwind theme.
- *
- * The palette is the Real Time Colors set, declared once as RGB channel
- * triplets in src/styles.css and referenced here through `rgb(var(--x) /
- * <alpha-value>)`. Channels rather than hex is what makes opacity utilities
- * work, so `bg-primary/10` gives a real tint instead of being ignored.
- *
- *   background #fefcfb   text #021016   primary #3d27ce
- *   secondary  #ffdbed   accent #443dff
- *
- * Everything else (border, muted, card, status colours) is derived from those
- * five so the UI stays one system rather than five colours plus ad-hoc greys.
- */
-
 /** @type {import('tailwindcss').Config} */
 export default {
   content: ["./index.html", "./src/**/*.{ts,tsx}"],
@@ -52,9 +37,8 @@ export default {
         warning: "rgb(var(--warning) / <alpha-value>)",
       },
       fontFamily: {
-        // Stardom is a display serif — headings only. Body text falls to Inter,
-        // which is what keeps long question text readable.
-        display: ["Stardom", "Georgia", "serif"],
+        // System-first typography; the homepage adds a restrained serif accent.
+        display: ["Inter", "ui-sans-serif", "system-ui", "Segoe UI", "sans-serif"],
         sans: [
           "Inter",
           "ui-sans-serif",

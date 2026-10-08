@@ -1,5 +1,0 @@
-{
-  "id": "bench-13",
-  "words": 41,
-  "text": "I reduced build times from 22 minutes to 6 minutes by parallelizing test suites, caching Docker layers, and moving integration tests to a nightly run for slow ones. Developer happiness went up noticeably."
-}

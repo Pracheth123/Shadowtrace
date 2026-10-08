@@ -1,5 +1,0 @@
-{
-  "id": "bench-12",
-  "words": 42,
-  "text": "The monitoring alerting had three tiers: page-on-call immediately for SLA breaches, Slack notifications for elevated error rates, and daily digest emails for trend analysis. We almost eliminated alert fatigue with that approach."
-}

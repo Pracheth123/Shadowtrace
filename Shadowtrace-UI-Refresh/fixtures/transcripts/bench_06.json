@@ -1,5 +1,0 @@
-{
-  "id": "bench-06",
-  "words": 43,
-  "text": "The post-mortem format I introduced had five sections: timeline, root cause, contributing factors, action items, and a lessons learned section that wasn't tied to blame. It got adopted company-wide."
-}

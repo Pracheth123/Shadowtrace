@@ -1,5 +1,0 @@
-{
-  "id": "bench-02",
-  "words": 42,
-  "text": "The circuit breaker had three states: closed, open, and half-open. We'd trip it after 5 consecutive failures within a 10 second window and then probe with a single request every 30 seconds."
-}

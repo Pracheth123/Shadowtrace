@@ -1,5 +1,0 @@
-{
-  "id": "bench-01",
-  "words": 38,
-  "text": "We used Prometheus with custom exporters to track consumer group lag and set alert thresholds at 50k events. When lag exceeded that we'd throttle the producer send rate by 20 percent until it recovered."
-}

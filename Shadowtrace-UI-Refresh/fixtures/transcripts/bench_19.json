@@ -1,5 +1,0 @@
-{
-  "id": "bench-19",
-  "words": 46,
-  "text": "We enforced code quality with required reviews from two engineers, automated lint and type checking in CI, and a weekly architecture review for any change touching the data layer. Defect rate dropped by 60 percent."
-}

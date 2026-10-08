@@ -1,5 +1,0 @@
-Requirements
-Python, Flask, Kubernetes
-
-Nice to have
-Redis

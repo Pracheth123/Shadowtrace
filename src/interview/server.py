@@ -102,7 +102,6 @@ from interview.llm.env import load_dotenv
 from interview.mocks.fake_stt import FakeStt
 from interview.services import diagnostics as diag
 from interview.services.evaluation import build_services, set_state, EvaluationService
-from interview.roadmap.reports import ReportStore
 from interview.services.feedback import (
     FeedbackError,
     FeedbackService,
@@ -163,16 +162,17 @@ async def _lifespan(_app: FastAPI):
         await _stop_retention()
 
 
+load_dotenv()
+_SETTINGS = get_settings()
+
 app = FastAPI(title=f"Shadowtrace — Stage {STAGE}", lifespan=_lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_SETTINGS.allowed_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-load_dotenv()
-_SETTINGS = get_settings()
 LOG_DIR = Path(os.environ.get("SESSION_LOG_DIR", "logs"))
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -220,7 +220,8 @@ def _use_mock_llm() -> bool:
 # Built in services/ so this module never imports evaluation directly: the
 # composition root only queues a job after the live session has closed.
 REGISTRY: CandidateRegistry
-REPORT_STORE: ReportStore
+# The report store is constructed by build_services; the live composition
+# root does not need to import the downstream roadmap implementation.
 EVALUATION: EvaluationService
 
 
@@ -1394,9 +1395,31 @@ async def _run_socket(websocket: WebSocket, ctx: SessionContext, *, opening: dic
         parked.cancel()
 
     ctx.holder.ws = websocket
+    completed = asyncio.Event()
 
     async def on_wire(msg: dict) -> None:
         await ctx.holder.send_text(json.dumps(msg))
+        if msg.get("type") == "session_complete":
+            completed.set()
+
+    async def receive_or_complete() -> dict | None:
+        # Runtime completion can arrive from a background generation task
+        # while the browser is idle. Do not wait for another client message
+        # before flushing the log and starting evaluation.
+        receive = asyncio.create_task(websocket.receive())
+        completion = asyncio.create_task(completed.wait())
+        try:
+            done, _ = await asyncio.wait(
+                {receive, completion}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if completion in done:
+                return None
+            return receive.result()
+        finally:
+            for task in (receive, completion):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(receive, completion, return_exceptions=True)
 
     live.on_wire = on_wire
     ticket = RECONNECT.issue(session_id, ctx=ctx)
@@ -1455,7 +1478,9 @@ async def _run_socket(websocket: WebSocket, ctx: SessionContext, *, opening: dic
                 await _start_live(ctx)
 
         while True:
-            message = await websocket.receive()
+            message = await receive_or_complete()
+            if message is None:
+                break
             if message.get("type") == "websocket.disconnect":
                 dropped = True
                 break
@@ -1609,6 +1634,8 @@ async def _run_socket(websocket: WebSocket, ctx: SessionContext, *, opening: dic
         return
 
     await _close_out(ctx)
+    if not dropped:
+        await websocket.close(code=1000)
 
 
 async def _close_out(ctx: SessionContext) -> None:

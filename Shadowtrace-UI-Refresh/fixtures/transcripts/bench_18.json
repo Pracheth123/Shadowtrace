@@ -1,5 +1,0 @@
-{
-  "id": "bench-18",
-  "words": 42,
-  "text": "The observability stack was OpenTelemetry for tracing, Prometheus for metrics, and Loki for logs. We had a unified Grafana dashboard that correlated all three using the trace ID as a common key."
-}

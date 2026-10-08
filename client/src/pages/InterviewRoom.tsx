@@ -52,6 +52,8 @@ export function InterviewRoom({ session, onFinished }: InterviewRoomProps) {
   const answerRef = useRef<HTMLInputElement | null>(null);
   const transcriptEnd = useRef<HTMLDivElement | null>(null);
 
+  useEffect(() => () => { videoStream?.getTracks().forEach((track) => track.stop()); }, [videoStream]);
+
   const { text: statusText, tone } = statusMessage(
     session.status,
     session.statusDetail,
@@ -125,7 +127,7 @@ export function InterviewRoom({ session, onFinished }: InterviewRoomProps) {
   const voiceTrouble = session.lane === "voice" && (session.voiceProblem || session.micError);
 
   return (
-    <div className="mx-auto flex w-full max-w-2xl flex-col gap-5">
+    <div className="interview-layout mx-auto flex w-full flex-col gap-5">
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-2">
           <h2 className="text-xl">{session.isPractice ? "Targeted practice" : "Interview in progress"}</h2>
@@ -243,12 +245,10 @@ export function InterviewRoom({ session, onFinished }: InterviewRoomProps) {
       )}
 
       {/* The question the interviewer is asking. */}
-      <Card>
-        <CardPanel className="pt-5">
-          <span className="mb-1.5 block text-xs uppercase tracking-wide text-muted-foreground">
-            {session.utterance?.speaker ?? "Interviewer"}
-          </span>
-          <p className="min-h-[3.5rem] text-base leading-relaxed" aria-live="polite">
+      <Card className="live-question">
+        <CardPanel>
+          <div className="question-persona"><span aria-hidden="true">{session.utterance?.speaker?.slice(0, 2).toUpperCase() || "ST"}</span><span>{session.utterance?.speaker ?? "Your interviewer"}</span></div>
+          <p className="question-text" aria-live="polite">
             {session.utterance?.text ??
               "Waiting for the interviewer to open the session…"}
           </p>
@@ -383,7 +383,7 @@ export function InterviewRoom({ session, onFinished }: InterviewRoomProps) {
         </Card>
       )}
 
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="room-controls flex flex-wrap items-center gap-2">
         {session.lane === "voice" && (
           <>
             <Button
@@ -407,22 +407,15 @@ export function InterviewRoom({ session, onFinished }: InterviewRoomProps) {
               <Button
                 variant="outline"
                 disabled={!session.running}
-                onMouseDown={() => {
+                onPointerDown={(event) => {
+                  event.currentTarget.setPointerCapture(event.pointerId);
                   setTalking(true);
                   session.setTalking(true);
                 }}
-                onMouseUp={() => {
-                  setTalking(false);
-                  session.setTalking(false);
-                }}
-                onTouchStart={() => {
-                  setTalking(true);
-                  session.setTalking(true);
-                }}
-                onTouchEnd={() => {
-                  setTalking(false);
-                  session.setTalking(false);
-                }}
+                onPointerUp={() => { setTalking(false); session.setTalking(false); }}
+                onPointerCancel={() => { setTalking(false); session.setTalking(false); }}
+                onLostPointerCapture={() => { setTalking(false); session.setTalking(false); }}
+                onBlur={() => { setTalking(false); session.setTalking(false); }}
                 onKeyDown={(event) => {
                   if (event.key === " " && !talking) {
                     event.preventDefault();
@@ -477,10 +470,10 @@ export function InterviewRoom({ session, onFinished }: InterviewRoomProps) {
         <kbd>/</kbd> focus the answer box · <kbd>Enter</kbd> send a typed answer.
       </p>
 
-      <Card>
-        <CardPanel className="pt-4">
+      <Card className="room-transcript">
+        <CardPanel className="pt-5">
           <div className="flex items-center justify-between">
-            <h3 className="text-sm font-medium">Transcript so far</h3>
+            <h3 className="text-sm font-medium">Your conversation</h3>
             <Button variant="ghost" size="sm" onClick={() => setShowTranscript((on) => !on)} aria-expanded={showTranscript}>
               {showTranscript ? "Hide" : "Show"}
             </Button>
@@ -491,7 +484,7 @@ export function InterviewRoom({ session, onFinished }: InterviewRoomProps) {
                 <p className="text-muted-foreground">Nothing yet.</p>
               ) : (
                 session.lines.map((line) => (
-                  <p key={line.key}>
+                  <p key={line.key} className="transcript-line" data-speaker={line.speaker}>
                     <span className={cn("font-medium", line.speaker === "you" ? "text-primary" : "")}>
                       {line.label}:
                     </span>{" "}
