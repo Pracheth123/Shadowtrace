@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { useFieldId } from "@/components/ui/field";
 import { UPLOAD_ACCEPT, UPLOAD_LABEL, UPLOAD_MAX_MB } from "@/lib/api";
 import { useFileUpload } from "@/lib/use-file-upload";
 import { cn } from "@/lib/utils";
@@ -36,6 +37,7 @@ export type ResumeUploadProps = {
  * confirm they picked the right file.
  */
 export function ResumeUpload({ onFileChange, noun = "resume" }: ResumeUploadProps) {
+  const fieldId = useFieldId();
   const [state, actions] = useFileUpload({
     accept: ACCEPT,
     maxSize: MAX_SIZE,
@@ -60,6 +62,7 @@ export function ResumeUpload({ onFileChange, noun = "resume" }: ResumeUploadProp
         )}
       >
         <input
+          id={fieldId ?? undefined}
           ref={ref}
           onChange={onChange}
           className="sr-only"

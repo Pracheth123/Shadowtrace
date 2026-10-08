@@ -65,3 +65,17 @@ included in this repository.
 - `evaluation_set/examples.jsonl`: synthetic, authored for this repository with
   a development assistant during stage 16; no third-party data.
 - Pitch deck or other materials outside this repository: not inventoried.
+
+## October 8 UI refresh references
+
+The original homepage layout, SVG brand mark, favicon and application styling
+were authored for this project. Design references: [Radix Themes](https://github.com/radix-ui/themes),
+[Radix Themes playground](https://www.radix-ui.com/themes/playground), and
+[shadcn/ui](https://github.com/shadcn-ui/ui). No source or artwork from these
+references was copied. The existing upload component identifies Origin UI as
+its source; the team should confirm its original provenance and licence.
+System fonts replace the external font requests; no new font assets are bundled.
+
+The optional browser test harness uses Playwright and axe-core. These test-only
+packages are installed separately from the application; their upstream licences
+apply. Browser binaries are not included in the source archive.

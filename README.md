@@ -10,6 +10,7 @@ Scores are **experimental coaching indicators**. They are not hiring
 predictions, not judgements of truth or honesty, and have not been validated
 against human review. Nothing here screens, ranks or gates anyone.
 
+- UI refresh, browser test evidence and local walkthrough: [`docs/UI_REFRESH.md`](docs/UI_REFRESH.md)
 - Architecture: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 - API and report schema: [`docs/API.md`](docs/API.md)
 - Known limitations: [`docs/KNOWN_LIMITATIONS.md`](docs/KNOWN_LIMITATIONS.md)
@@ -53,7 +54,7 @@ python -m uvicorn interview.server:app --host 127.0.0.1 --port 8000
 ```powershell
 # 4. Frontend (terminal 2)
 cd client
-npm install
+npm ci
 npm run dev
 # 5. Open the app
 Start-Process "http://localhost:5173"
@@ -111,7 +112,7 @@ calls a provider.
 
 Use real keys (`/health` shows `interviewer: groq`, `evaluator: groq`).
 
-1. **Intake.** Paste a short background or upload a resume, pick *Software* or
+1. **Home and intake.** Open `http://localhost:5173` and click **Prepare my interview**. Paste a short background or upload a resume, pick *Software* or
    *Sales*, round *Full interview* (or one round to be quick), *Type* or *Speak*.
    Read and tick the consent box — it names Groq and Deepgram, the guest-key
    limits and the retention period.

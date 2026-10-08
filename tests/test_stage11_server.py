@@ -337,3 +337,21 @@ def test_the_stub_intake_and_unauthenticated_delete_are_gone(server) -> None:
         assert client.post("/intake", json={"candidate_id": "ada"}).status_code in (404, 405)
         assert client.post("/me/delete", json={"candidate_id": "ada"}).status_code in (404, 405)
         assert client.post("/api/me/delete").status_code == 401
+
+
+def test_background_completion_finalises_without_another_client_message(server) -> None:
+    """An idle socket must not hold finished interviews/evaluation open."""
+    with TestClient(server.app) as client:
+        with client.websocket_connect('/ws/session') as ws:
+            ws.send_json({'type': 'session_start', 'pack_id': 'behavioral-core', 'lane': 'text'})
+            ready = _ready(ws)
+            _read_until(ws, 'agent_utterance_end')
+            ctx = server._LIVE[ready['session_id']]
+            # Like the final reply task: completion occurs independently of
+            # the receive loop. No session_end or disconnect from the client.
+            client.portal.call(ctx.live.end, 'complete')
+            _read_until(ws, 'session_complete')
+            closed = ws.receive()
+            assert closed == {'type': 'websocket.close', 'code': 1000, 'reason': ''}
+            assert ctx.closed_out
+            assert ready['session_id'] not in server._LIVE

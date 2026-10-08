@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { CircleAlertIcon, LoaderCircleIcon } from "lucide-react";
+import { ArrowRightIcon, ChevronDownIcon, CircleAlertIcon, FilePlusIcon, LoaderCircleIcon, ShieldCheckIcon } from "lucide-react";
 
 import { ResumeUpload } from "@/components/ResumeUpload";
 import { Badge } from "@/components/ui/badge";
@@ -96,22 +96,23 @@ export function SetupPage({ onStart, onOpenHistory }: SetupPageProps) {
   const [family, setFamily] = useState<RoleFamily>("software");
   const [seniority, setSeniority] = useState<Seniority>("mid");
   const [round, setRound] = useState<RoundChoice>("full");
-  const [lane, setLane] = useState<Lane>("voice");
+  const [lane, setLane] = useState<Lane>("text");
   const [intensity, setIntensity] = useState<Intensity>("realistic");
   const [jobDescription, setJobDescription] = useState("");
   const [company, setCompany] = useState("");
   const [repoUrl, setRepoUrl] = useState("");
   const [workSample, setWorkSample] = useState<File | null>(null);
   const [health, setHealth] = useState<Record<string, any> | null>(null);
+  const [healthFailed, setHealthFailed] = useState(false);
   const [consent, setConsent] = useState(false);
   const pollRef = useRef<number | null>(null);
 
   useEffect(() => {
     void ensureGuest().catch(() => undefined);
     fetch(`${HTTP_BASE}/health`)
-      .then((r) => r.json())
+      .then((r) => { if (!r.ok) throw new Error("Service unavailable"); return r.json(); })
       .then(setHealth)
-      .catch(() => setHealth(null));
+      .catch(() => { setHealth(null); setHealthFailed(true); });
     return () => {
       if (pollRef.current) window.clearTimeout(pollRef.current);
     };
@@ -196,7 +197,7 @@ export function SetupPage({ onStart, onOpenHistory }: SetupPageProps) {
     const index = status?.stage_index ?? 0;
     const count = status?.stage_count ?? 5;
     return (
-      <div className="mx-auto flex w-full max-w-xl flex-col gap-6">
+      <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
@@ -228,9 +229,11 @@ export function SetupPage({ onStart, onOpenHistory }: SetupPageProps) {
     const cfg = result.config ?? {};
     const chosenLane = String(cfg.lane ?? lane) as Lane;
     return (
-      <div className="mx-auto flex w-full max-w-2xl flex-col gap-5">
-        <header className="flex flex-col gap-1">
-          <h1>Your preparation</h1>
+      <div className="mx-auto flex w-full max-w-4xl flex-col gap-5">
+        <JourneySteps current={1} />
+        <header className="workspace-title">
+          <p className="eyebrow">CHECK THE CONTEXT</p>
+          <h1>Your experience, in focus.</h1>
           <p className="text-sm text-muted-foreground">
             {String(cfg.target_role)} · {ROUNDS.find((r) => r.value === cfg.round)?.label} ·{" "}
             {chosenLane === "text" ? "typed" : "spoken"} ·{" "}
@@ -306,37 +309,33 @@ export function SetupPage({ onStart, onOpenHistory }: SetupPageProps) {
   }
 
   return (
-    <div className="mx-auto flex w-full max-w-xl flex-col gap-6">
-      <header className="flex flex-col gap-1">
-        <div className="flex items-center justify-between">
-          <h1>Shadow Trace</h1>
-          <Button variant="ghost" size="sm" onClick={onOpenHistory}>
-            Your history
-          </Button>
-        </div>
-        <p className="text-sm text-muted-foreground">
-          Interview practice built from your own background. Questions follow up
-          on what you have actually done; feedback quotes what you actually said.
-        </p>
+    <div className="w-full">
+      <JourneySteps current={0} />
+      <header className="workspace-title">
+        <p className="eyebrow">MAKE IT YOUR INTERVIEW</p>
+        <h1>A little context goes a long way.</h1>
+        <p>Bring your experience. Choose the conversation you want to practise.</p>
       </header>
-
+      <div className="provider-status" role="status">
+        <ShieldCheckIcon aria-hidden="true" />
+        <p>{health === null ? healthFailed ? "The interview service is unavailable. Check that the backend is running, then reload this page." : "Connecting to the interview service…" : health.providers?.interviewer === "groq" ? <><strong>Interview service configured.</strong> {voiceAvailable ? "Voice and typing are configured. Provider access is verified when used." : "Typing is configured; voice is currently unavailable."}</> : <><strong>Development mode.</strong> Questions follow a fixed plan. Feedback is a placeholder, not an AI assessment. {voiceAvailable ? "Speech is configured." : "Use typing for this preview."}</>}</p>
+      </div>
+      <div className="setup-layout">
       <Card>
-        <CardHeader>
-          <CardTitle>Set up your interview</CardTitle>
-          <CardDescription>Everything here changes the interview you get.</CardDescription>
-        </CardHeader>
-
-        <CardPanel>
-          <Form className="w-full" onSubmit={submit}>
+        <CardPanel className="p-0">
+          <Form className="setup-form w-full" onSubmit={submit}>
+            <section className="setup-section" aria-labelledby="background-heading">
+              <SectionHeading number="01" id="background-heading" title="Your experience" description="A resume, a few sentences, or both." />
             <Field>
               <FieldLabel>Your resume</FieldLabel>
               <ResumeUpload onFileChange={setResume} />
             </Field>
 
             <Field>
-              <FieldLabel>Or describe your background</FieldLabel>
+              <FieldLabel htmlFor="background">Or describe your background</FieldLabel>
               <textarea
                 className="min-h-24 w-full rounded-md border border-input bg-card px-3 py-2 text-sm"
+                id="background"
                 placeholder="A few sentences about what you have done: 'I led…', 'I built…', 'I closed…'"
                 value={background}
                 onChange={(event) => setBackground(event.target.value)}
@@ -347,6 +346,9 @@ export function SetupPage({ onStart, onOpenHistory }: SetupPageProps) {
               </FieldDescription>
             </Field>
 
+            </section>
+            <section className="setup-section" aria-labelledby="role-heading">
+              <SectionHeading number="02" id="role-heading" title="Your next role" description="The interview follows your profession and experience level." />
             <Field>
               <FieldLabel>Target role</FieldLabel>
               <Input
@@ -357,6 +359,7 @@ export function SetupPage({ onStart, onOpenHistory }: SetupPageProps) {
               />
             </Field>
 
+            <div className="field-grid">
             <Field>
               <FieldLabel>Profession</FieldLabel>
               <Select
@@ -379,6 +382,10 @@ export function SetupPage({ onStart, onOpenHistory }: SetupPageProps) {
               <FieldDescription>Senior and lead roles add leadership follow-ups.</FieldDescription>
             </Field>
 
+            </div>
+            </section>
+            <section className="setup-section" aria-labelledby="conversation-heading">
+              <SectionHeading number="03" id="conversation-heading" title="The conversation" description="Choose a full interview or focus on one round." />
             <Field>
               <FieldLabel>Interview round</FieldLabel>
               <Select
@@ -398,7 +405,7 @@ export function SetupPage({ onStart, onOpenHistory }: SetupPageProps) {
                 onValueChange={(next) => setLane(next as Lane)}
                 name="lane"
               >
-                <RadioPrimitive.Root className={itemClassName} value="voice">
+                <RadioPrimitive.Root className={itemClassName} value="voice" disabled={!voiceAvailable}>
                   Speak
                 </RadioPrimitive.Root>
                 <RadioPrimitive.Root className={itemClassName} value="text">
@@ -410,7 +417,7 @@ export function SetupPage({ onStart, onOpenHistory }: SetupPageProps) {
                   ? "Typing is fine. Spoken delivery is not assessed or scored."
                   : voiceAvailable
                     ? "You will need microphone access. You can switch to typing if voice fails."
-                    : "The server reports no speech provider; this would run with mock audio in development, or be refused in production. Typing is recommended."}
+                    : "Voice is unavailable right now. You can prepare and complete the interview by typing."}
               </FieldDescription>
             </Field>
 
@@ -435,10 +442,15 @@ export function SetupPage({ onStart, onOpenHistory }: SetupPageProps) {
               </FieldDescription>
             </Field>
 
+            </section>
+            <details className="setup-optional">
+              <summary><FilePlusIcon size={16} aria-hidden="true" /> Add more context <span className="text-xs font-normal text-muted-foreground">Optional</span><ChevronDownIcon size={16} aria-hidden="true" /></summary>
+              <div className="optional-fields">
             <Field>
-              <FieldLabel>Job description (optional)</FieldLabel>
+              <FieldLabel htmlFor="job-description">Job description (optional)</FieldLabel>
               <textarea
                 className="min-h-20 w-full rounded-md border border-input bg-card px-3 py-2 text-sm"
+                id="job-description"
                 placeholder="Paste the job description, ideally including its requirements list."
                 value={jobDescription}
                 onChange={(event) => setJobDescription(event.target.value)}
@@ -448,9 +460,10 @@ export function SetupPage({ onStart, onOpenHistory }: SetupPageProps) {
             </Field>
 
             <Field>
-              <FieldLabel>Company context (optional)</FieldLabel>
+              <FieldLabel htmlFor="company-context">Company context (optional)</FieldLabel>
               <textarea
                 className="min-h-16 w-full rounded-md border border-input bg-card px-3 py-2 text-sm"
+                id="company-context"
                 placeholder="What you know about the company. No research is done for you."
                 value={company}
                 onChange={(event) => setCompany(event.target.value)}
@@ -461,6 +474,7 @@ export function SetupPage({ onStart, onOpenHistory }: SetupPageProps) {
             <Field>
               <FieldLabel>Repository (optional)</FieldLabel>
               <Input
+                type="url"
                 placeholder="https://github.com/you/project"
                 value={repoUrl}
                 onChange={(event) => setRepoUrl(event.target.value)}
@@ -477,6 +491,9 @@ export function SetupPage({ onStart, onOpenHistory }: SetupPageProps) {
               <FieldDescription>A document you wrote, e.g. a plan, analysis or design doc.</FieldDescription>
             </Field>
 
+              </div>
+            </details>
+            <div className="setup-final">
             <ConsentBlock
               checked={consent}
               onChange={setConsent}
@@ -494,8 +511,9 @@ export function SetupPage({ onStart, onOpenHistory }: SetupPageProps) {
             )}
 
             <Button className="w-full" size="lg" type="submit" disabled={submitting}>
-              {submitting ? "Uploading…" : "Prepare my interview"}
+              {submitting ? <><LoaderCircleIcon className="animate-spin" /> Preparing…</> : <>Prepare my interview <ArrowRightIcon /></>}
             </Button>
+            </div>
           </Form>
         </CardPanel>
 
@@ -509,8 +527,32 @@ export function SetupPage({ onStart, onOpenHistory }: SetupPageProps) {
           </div>
         </CardFooter>
       </Card>
+      <aside className="setup-summary" aria-label="Your interview summary">
+        <p className="eyebrow">YOUR PRACTICE, AT A GLANCE</p>
+        <h2>{targetRole.trim() || "Your next conversation"}</h2>
+        <dl>
+          <div><dt>Profession</dt><dd>{ROLE_FAMILIES.find((item) => item.value === family)?.label}</dd></div>
+          <div><dt>Experience</dt><dd>{SENIORITIES.find((item) => item.value === seniority)?.label}</dd></div>
+          <div><dt>Answer by</dt><dd>{lane === "voice" ? "Speaking" : "Typing"}</dd></div>
+          <div><dt>Difficulty</dt><dd>{INTENSITIES.find((item) => item.value === intensity)?.label}</dd></div>
+        </dl>
+        <ol className="summary-rounds" aria-label="Selected rounds">
+          {(round === "full" ? ROUNDS.filter((item) => item.value !== "full") : ROUNDS.filter((item) => item.value === round)).map((item, index) => <li key={item.value}><span>{String(index + 1).padStart(2, "0")}</span>{item.label}</li>)}
+        </ol>
+        <p>You’ll review the statements extracted from your background before the interview begins. Nothing is uploaded until you confirm and continue.</p>
+        <Button variant="link" size="sm" className="mt-3 p-0" onClick={onOpenHistory}>Return to your history <ArrowRightIcon /></Button>
+      </aside>
+      </div>
     </div>
   );
+}
+
+function JourneySteps({ current }: { current: number }) {
+  return <ol className="journey-stepper" aria-label="Preparation steps">{["Your background", "Review & prepare", "Interview"].map((label, index) => <li key={label} aria-current={current === index ? "step" : undefined}><span>{index + 1}</span>{label}</li>)}</ol>;
+}
+
+function SectionHeading({ number, id, title, description }: { number: string; id: string; title: string; description: string }) {
+  return <div className="section-heading"><span>{number}</span><div><h2 id={id}>{title}</h2><p>{description}</p></div></div>;
 }
 
 // ---------------------------------------------------------------------------
@@ -528,7 +570,10 @@ function ConsentBlock({
 }) {
   return (
     <div className="flex flex-col gap-2 rounded-md border border-border px-3 py-3 text-xs text-muted-foreground">
-      <p className="text-sm font-medium text-foreground">Before anything is uploaded</p>
+      <p className="text-sm font-medium text-foreground">Your data, with your permission</p>
+      <p>Background and answers are processed by Groq; voice uses Deepgram. Your guest key is saved only in this browser, with no recovery. {retentionDays > 0 ? `App data is deleted after ${retentionDays} days without activity.` : "App data is kept until you delete it."}</p>
+      <details>
+      <summary className="cursor-pointer py-2 font-medium text-primary">Read the processing and retention details</summary>
       <ul className="flex list-disc flex-col gap-1 pl-4">
         <li>
           Text from your resume, background, job description and answers is sent to <strong>Groq</strong> (an
@@ -552,6 +597,7 @@ function ConsentBlock({
             : `Your data here is kept until you use "Delete my data".`}
         </li>
       </ul>
+      </details>
       <label className="flex items-start gap-2 text-sm text-foreground">
         <input
           type="checkbox"
