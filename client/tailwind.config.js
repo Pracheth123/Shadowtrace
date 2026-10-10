@@ -35,14 +35,19 @@ export default {
         },
         success: "rgb(var(--success) / <alpha-value>)",
         warning: "rgb(var(--warning) / <alpha-value>)",
+        "primary-hover": "rgb(var(--primary-hover) / <alpha-value>)",
+        charcoal: "rgb(var(--charcoal-rgb) / <alpha-value>)",
+        brass: "rgb(var(--brass-rgb) / <alpha-value>)",
       },
       fontFamily: {
-        // Self-hosted in src/assets/fonts (see @font-face in styles.css).
-        // Newsreader: headings and quotes. Schibsted Grotesk: interface text.
-        display: ["Newsreader", "Iowan Old Style", "Georgia", "serif"],
+        // Self-hosted in src/assets/fonts (see @font-face in styles.css and
+        // docs/DESIGN_SYSTEM.md). Syne: headings and brand. Newsreader: quotes
+        // and editorial narrative. Schibsted Grotesk: interface text.
+        // JetBrains Mono: short labels and metadata only.
+        display: ["Syne", "Schibsted Grotesk", "ui-sans-serif", "system-ui", "sans-serif"],
         serif: ["Newsreader", "Iowan Old Style", "Georgia", "serif"],
         sans: ["Schibsted Grotesk", "ui-sans-serif", "system-ui", "Segoe UI", "sans-serif"],
-        mono: ["ui-monospace", "SFMono-Regular", "Consolas", "monospace"],
+        mono: ["JetBrains Mono", "ui-monospace", "SFMono-Regular", "Consolas", "monospace"],
       },
       borderRadius: {
         lg: "var(--radius)",
@@ -50,7 +55,8 @@ export default {
         sm: "calc(var(--radius) - 0.4rem)",
       },
       boxShadow: {
-        card: "0 1px 2px rgb(var(--foreground) / 0.04), 0 8px 24px -12px rgb(var(--foreground) / 0.10)",
+        card: "var(--shadow-raised)",
+        paper: "var(--shadow-paper)",
         focus: "0 0 0 3px rgb(var(--ring) / 0.35)",
       },
       keyframes: {

@@ -51,7 +51,7 @@ export function FieldDescription({
   ...props
 }: React.ComponentPropsWithoutRef<"p">) {
   return (
-    <p className={cn("text-xs text-muted-foreground", className)} {...props} />
+    <p className={cn("text-[13px] leading-relaxed text-muted-foreground", className)} {...props} />
   );
 }
 

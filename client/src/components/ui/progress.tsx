@@ -37,13 +37,13 @@ export function Progress({
       aria-valuetext={label}
       aria-label={label}
       className={cn(
-        "h-1.5 w-full overflow-hidden rounded-full bg-muted",
+        "h-1.5 w-full overflow-hidden rounded-sm bg-muted",
         className,
       )}
       {...props}
     >
       <div
-        className="h-full rounded-full bg-primary transition-[width] duration-500 ease-out"
+        className="h-full rounded-sm bg-primary transition-[width] duration-500 ease-out"
         style={{ width: `${percent}%` }}
       />
     </div>

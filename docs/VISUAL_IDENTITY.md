@@ -1,4 +1,8 @@
-# Visual identity
+# Visual identity (superseded)
+
+> **Superseded on October 10, 2026** by the Stitch identity in
+> [DESIGN_SYSTEM.md](DESIGN_SYSTEM.md). Kept for history; the values below are
+> no longer used.
 
 Updated October 8, 2026. This replaces the earlier system-font, warm-white and
 forest-green treatment. The tokens are defined once, in `client/src/styles.css`

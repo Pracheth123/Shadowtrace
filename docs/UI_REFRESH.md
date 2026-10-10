@@ -6,7 +6,7 @@ Updated October 8, 2026. Based on `Shadowtrace-main (5).zip`.
 
 The app previously opened straight into a long setup form. It now opens with a
 complete homepage explaining the product and leading into the working interview
-journey. The visual identity (palette and self-hosted fonts) is described in
+journey. The current visual identity (Stitch, October 10) is described in [DESIGN_SYSTEM.md](DESIGN_SYSTEM.md); the October 8 identity is in
 [VISUAL_IDENTITY.md](VISUAL_IDENTITY.md); it replaced the original warm-white /
 forest-green / system-font treatment on October 8.
 

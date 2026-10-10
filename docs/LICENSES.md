@@ -119,6 +119,17 @@ files; no npm dependency added). Each family's licence text sits beside it.
 | Newsreader (variable: wght 200–800, opsz 6–72; normal + italic) | `newsreader-latin-opsz-{normal,italic}.woff2` | SIL OFL 1.1 (`OFL-Newsreader.txt`) | 2020 The Newsreader Project Authors (Production Type) |
 | Schibsted Grotesk (variable: wght 400–900; normal + italic) | `schibsted-grotesk-latin-wght-{normal,italic}.woff2` | SIL OFL 1.1 (`OFL-SchibstedGrotesk.txt`) | 2023 The Schibsted-Grotesk Project Authors |
 
+Added October 10 (Stitch redesign), from `@fontsource-variable/syne@5.3.0` and
+`@fontsource-variable/jetbrains-mono@5.3.0`, downloaded as files with
+`npm pack` (no npm dependency added). Latin subset, normal style only.
+
+| Family | Files | Licence | Copyright |
+|---|---|---|---|
+| Syne (variable: wght 400–800; normal) | `syne-latin-wght-normal.woff2` (34,608 bytes) | SIL OFL 1.1 (`OFL-Syne.txt`) | 2019 The Syne Project Authors (Bonjour Monde) |
+| JetBrains Mono (variable: wght 100–800; normal) | `jetbrains-mono-latin-wght-normal.woff2` (40,404 bytes) | SIL OFL 1.1 (`OFL-JetBrainsMono.txt`) | 2020 The JetBrains Mono Project Authors |
+
+SHA-256: syne `68b623f0…7048`, jetbrains mono `18be4527…6a7e`.
+
 SHA-256: newsreader normal `6e4f2958…d101`, italic `5dfcd10d…7506`;
 schibsted normal `4c8b93f4…5e05`, italic `4c72510c…65f7`. The OFL permits
 bundling and redistribution with the licence; the fonts may not be sold on

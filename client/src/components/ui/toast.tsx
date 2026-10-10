@@ -77,7 +77,7 @@ function ToastItem({ toast }: { toast: ToastRecord }) {
   return (
     <li
       className={cn(
-        "pointer-events-auto flex w-80 animate-toast-in items-start gap-3 rounded-lg border bg-card p-3 shadow-card",
+        "pointer-events-auto flex w-80 max-w-[calc(100vw-2rem)] animate-toast-in items-start gap-3 rounded-md border border-l-4 border-l-[var(--charcoal)] bg-card p-3 shadow-card",
         toneClasses[toast.tone ?? "default"],
       )}
     >
