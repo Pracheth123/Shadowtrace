@@ -1,0 +1,48 @@
+# /etc/systemd/system/shadowtrace.service
+#
+# ONE uvicorn worker on purpose: live sessions, reconnect tickets, admission
+# limits, the session watchdog and background evaluation tasks are all held in
+# this process's memory. A second worker (or host) would split that state and
+# break reconnects and limits. See docs/DEPLOYMENT.md, "Scaling".
+[Unit]
+Description=Shadowtrace interview practice API (single worker)
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=/var/lib/shadowtrace
+
+[Service]
+Type=simple
+User=shadowtrace
+Group=shadowtrace
+WorkingDirectory=/srv/shadowtrace/current
+# Server-only secrets and settings; mode 0600, owned by root. Never in the client build.
+EnvironmentFile=/etc/shadowtrace/shadowtrace.env
+ExecStart=/srv/shadowtrace/current/.venv/bin/python -m uvicorn interview.server:app \
+    --host 127.0.0.1 --port 8000 --workers 1 \
+    --proxy-headers --forwarded-allow-ips 127.0.0.1 \
+    --timeout-graceful-shutdown 30 --log-level info
+Restart=on-failure
+RestartSec=3
+# Give live sessions a moment to finish their close path on stop.
+TimeoutStopSec=40
+KillSignal=SIGINT
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/shadowtrace
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+UMask=0077
+
+# Logs go to journald (rotated by journald; see deploy/logrotate/README).
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=shadowtrace
+
+[Install]
+WantedBy=multi-user.target

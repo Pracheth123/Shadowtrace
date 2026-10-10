@@ -282,6 +282,48 @@ def _address(conn: Request | WebSocket) -> str:
     return client_address(peer, conn.headers, get_settings().trusted_proxies)
 
 
+OPERATOR_STOP_FILE = "OPERATOR_STOP"
+DELETION_LEDGER = "deletion-ledger.jsonl"
+
+
+def _data_root() -> Path:
+    """DATA_DIR as the running services see it (the registry lives in DATA_DIR/candidates)."""
+    return REGISTRY.root.parent
+
+
+def _operator_stopped() -> bool:
+    """
+    Operator stop: `touch $DATA_DIR/OPERATOR_STOP` refuses new guests, intakes,
+    sessions, practice set-ups, retries and re-checks with 503, while live
+    sessions finish normally. Remove the file to resume. No restart needed.
+    """
+    return (_data_root() / OPERATOR_STOP_FILE).exists()
+
+
+def _paused() -> JSONResponse:
+    return JSONResponse(
+        {
+            "error": "New sessions are paused by the operator.",
+            "recovery": "Nothing was started or charged. Please try again later.",
+        },
+        status_code=503,
+        headers={"Retry-After": "300"},
+    )
+
+
+def _record_deletion(candidate_id: str) -> None:
+    """
+    Append the erased candidate id to a ledger beside the data. Backups taken
+    before the erasure still contain the data; tools/ops/restore.py replays
+    this ledger after any restore so deleted data stays deleted.
+    The id is a random identifier, not personal data.
+    """
+    ledger = _data_root() / DELETION_LEDGER
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    with ledger.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"candidate_id": candidate_id, "deleted_at": _now()}) + "\n")
+
+
 def _wait_words(seconds: int) -> str:
     return f"{seconds} seconds" if seconds < 120 else f"{round(seconds / 60)} minutes"
 
@@ -340,6 +382,49 @@ async def health():
     }
 
 
+@app.get("/ready")
+async def ready():
+    """
+    Readiness for a load balancer or deploy script: the data directory is
+    writable, the report store answers, and (in production) the configured
+    providers are present. 503 with the failing checks otherwise. Configured
+    is not verified: provider authentication is POST /api/diagnostics/verify.
+    """
+    import sqlite3
+
+    settings = get_settings()
+    checks: dict[str, bool] = {}
+    data_dir = _data_root()
+    try:
+        data_dir.mkdir(parents=True, exist_ok=True)
+        probe = data_dir / ".ready-probe"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+        checks["data_dir_writable"] = True
+    except OSError:
+        checks["data_dir_writable"] = False
+    try:
+        with sqlite3.connect(REPORT_STORE.path, timeout=2) as conn:
+            conn.execute("select 1").fetchone()
+        checks["report_store"] = True
+    except Exception:  # noqa: BLE001
+        checks["report_store"] = False
+    checks["interviewer_available"] = settings.interviewer_mode != "unavailable"
+    checks["evaluator_available"] = settings.evaluator_mode != "unavailable"
+    if settings.is_production:
+        checks["no_mock_providers"] = settings.interviewer_mode == "groq" and settings.evaluator_mode == "groq"
+    ok = all(checks.values())
+    body = {
+        "ready": ok,
+        "checks": checks,
+        "operator_stop": _operator_stopped(),
+        "app_env": settings.app_env,
+        "version": settings.app_version,
+        "git_sha": settings.git_sha,
+    }
+    return JSONResponse(body, status_code=200 if ok else 503)
+
+
 @app.get("/api/diagnostics")
 async def diagnostics():
     """Effective configuration and readiness. Never contains a secret."""
@@ -389,6 +474,8 @@ async def create_guest(request: Request):
     Issue a guest identity. The token is returned once and only its hash is
     stored. Limits: one browser, no recovery; see candidates.py.
     """
+    if _operator_stopped():
+        return _paused()
     try:
         Admission([
             (GUEST_LIMITER, _address(request), "Too many new guest identities from this address."),
@@ -464,6 +551,8 @@ async def create_intake(
             field="consent",
             recovery="Tick the consent box on the setup form, then submit again.",
         )
+    if _operator_stopped():
+        return _paused()
     try:
         admission = Admission([
             (INTAKE_LIMITER, candidate_id, "Intake limit reached for this hour."),
@@ -740,6 +829,8 @@ async def retry_evaluation(
             rounds = [str(r) for r in body["rounds"]]
     except Exception:  # noqa: BLE001 — an empty body means "all failed rounds"
         pass
+    if _operator_stopped():
+        return _paused()
     if EVALUATION.at_capacity():
         return _refused(AdmissionRefused("The server is busy evaluating other interviews.", 60.0))
     try:
@@ -843,6 +934,8 @@ async def request_revision(
         return _error(exc.status, str(exc))
     if get_settings().evaluator_mode == "unavailable":
         return _error(503, "No evaluation model is configured, so a re-check cannot run.")
+    if _operator_stopped():
+        return _paused()
     try:
         admission = Admission([
             (REVISION_LIMITER, candidate_id, "Too many re-checks this hour."),
@@ -894,6 +987,8 @@ async def start_practice(request: Request, authorization: str | None = Header(de
         return _error(422, "Send a JSON body.")
     if not isinstance(body, dict):
         return _error(422, "Send a JSON object.")
+    if _operator_stopped():
+        return _paused()
     try:
         admission = Admission([
             (PRACTICE_LIMITER, candidate_id, "Too many practice set-ups this hour."),
@@ -1049,6 +1144,7 @@ async def erase_candidate(candidate_id: str) -> dict:
     )
     removed = REGISTRY.delete(candidate_id)
     INTAKE_LIMITER.forget(candidate_id)
+    _record_deletion(candidate_id)
     return {
         "candidate_id": candidate_id,
         "session_ids": session_ids,
@@ -1316,6 +1412,14 @@ async def ws_session(websocket: WebSocket):
         await _reject(websocket, "Complete setup first: a session needs your intake.")
         return
 
+    if _operator_stopped():
+        await _reject(
+            websocket,
+            "New sessions are paused by the operator. Please try again later.",
+            code=1013,
+            retry_after_s=300,
+        )
+        return
     session_id = str(uuid.uuid4())
     try:
         SESSION_CAP.acquire(session_id)
