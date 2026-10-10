@@ -295,6 +295,13 @@ class EvaluationService:
             if r.get("state") == "failed"
         ]
         targets = [r for r in failed if rounds is None or r in rounds]
+        if rounds is not None and failed and not targets:
+            # Asked for rounds that did not fail. Running "everything" instead
+            # would re-bill rounds the candidate already has.
+            return {
+                **status,
+                "retry_refused": "Only a failed round can be retried; the round(s) asked for did not fail.",
+            }
         if not failed and not (status.get("evaluation") or {}).get("rounds"):
             targets = []  # job failed before rounds were planned: run everything
         _, _, _, max_runs = _budget()
@@ -658,6 +665,11 @@ class EvaluationService:
                     limiter_wait_s=round(sum(float(c.get("limiter_wait_s") or 0) for c in exc.calls), 3),
                     model_used=last.get("model_used"),
                     fallback_used=any(c.get("fallback_used") for c in exc.calls),
+                    # Safe diagnostics, one entry per reply: no reply text.
+                    output_mode=last.get("output_mode"),
+                    reply_outcomes=[c.get("error_category") or "ok" for c in exc.calls],
+                    finish_reasons=[c.get("finish_reason") for c in exc.calls],
+                    reply_chars=[c.get("reply_chars") for c in exc.calls],
                 )
                 return
             payload = {
@@ -685,6 +697,9 @@ class EvaluationService:
                 model_used=em.get("model_used"),
                 fallback_used=bool(em.get("fallback_used")),
                 usage=em.get("usage", {}),
+                output_mode=em.get("output_mode"),
+                reply_outcomes=em.get("reply_outcomes"),
+                finish_reasons=em.get("finish_reasons"),
             )
 
         # Independent rounds run concurrently; one failing does not cancel the

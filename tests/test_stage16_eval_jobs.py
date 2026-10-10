@@ -265,3 +265,68 @@ async def test_deletion_cancels_work_and_nothing_is_recreated(env) -> None:
     assert cancelled >= 1
     assert not registry.candidate_dir(cid).exists()
     assert store.sessions(cid, kind=None) == []
+
+
+async def test_retry_named_round_reruns_only_it_and_duplicate_retries_are_ignored(env) -> None:
+    registry, store, service, evaluator = env
+    evaluator.fail["hr"] = 1
+    evaluator.fail["hiring_manager"] = 1
+    cid, sid, directory = make_session(registry)
+    service.enqueue(cid, sid)
+    await service.wait(sid)
+    assert evaluator.calls == {"hr": 1, "hiring_manager": 1, "domain_specialist": 1}
+
+    # Asking for a round that did not fail is refused, not widened to "all".
+    refused = service.retry(cid, sid, ["domain_specialist"])
+    assert "retry_refused" in refused
+    assert not service._running(sid)
+
+    # "Retry this round": only HR is re-run; a second click while it is
+    # running starts nothing.
+    evaluator.gates["hr"] = asyncio.Event()
+    first = service.retry(cid, sid, ["hr"])
+    assert first["state"] == "evaluation_queued"
+    task = service._tasks[sid]
+    second = service.retry(cid, sid, ["hr"])
+    assert "retry_refused" not in second and service._tasks[sid] is task
+    evaluator.gates["hr"].set()
+    await service.wait(sid)
+
+    assert evaluator.calls == {"hr": 2, "hiring_manager": 1, "domain_specialist": 1}
+    rounds = {r["round"]: r for r in service.status(cid, sid)["evaluation"]["rounds"]}
+    assert rounds["hr"]["state"] == "complete"
+    assert rounds["hiring_manager"]["state"] == "failed"          # untouched
+    assert rounds["domain_specialist"]["state"] == "complete"
+    assert service.status(cid, sid)["state"] == "failed"
+
+    service.retry(cid, sid, ["hiring_manager"])
+    await service.wait(sid)
+    assert evaluator.calls == {"hr": 2, "hiring_manager": 2, "domain_specialist": 1}
+    assert service.status(cid, sid)["state"] == "complete"
+
+
+async def test_failed_round_records_safe_reply_diagnostics(env) -> None:
+    registry, store, service, evaluator = env
+
+    async def two_objects(messages, *, deadline_s=None):
+        evaluator.calls[perspective_of(messages)] += 1
+        text, meta = await MockEvaluator.complete_with_meta(evaluator, messages)
+        if perspective_of(messages) == "hr":
+            text = text + "\n" + text
+        return text, meta
+
+    evaluator.complete_with_meta = two_objects
+    cid, sid, directory = make_session(registry)
+    service.enqueue(cid, sid)
+    await service.wait(sid)
+    rounds = {r["round"]: r for r in service.status(cid, sid)["evaluation"]["rounds"]}
+    hr = rounds["hr"]
+    assert hr["state"] == "failed" and hr["category"] == "invalid_output"
+    assert hr["replies"] == 2
+    assert hr["reply_outcomes"] == ["multiple_objects", "multiple_objects"]
+    assert hr["finish_reasons"] == ["stop", "stop"]
+    assert all(isinstance(n, int) and n > 0 for n in hr["reply_chars"])
+    assert "Extra data" not in hr["error"]
+    # No transcript text in the stored diagnostics.
+    assert ANSWER["hr"][:30] not in json.dumps(hr)
+    assert rounds["hiring_manager"]["state"] == "complete"

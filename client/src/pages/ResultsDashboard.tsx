@@ -182,10 +182,14 @@ function SessionReportView({
     return () => window.clearTimeout(timer.current);
   }, [poll]);
 
-  const retry = async () => {
+  // Always names the failed round(s): the server re-runs exactly those and
+  // keeps every finished round. `retrying` blocks a second click meanwhile.
+  const retry = async (rounds: string[]) => {
+    if (retrying) return;
     setRetrying(true);
     try {
-      await api(`/api/sessions/${sessionId}/evaluation/retry`, jsonBody({}));
+      await api(`/api/sessions/${sessionId}/evaluation/retry`, jsonBody(rounds.length ? { rounds } : {}));
+      await load();
       poll();
     } catch (err) {
       toastManager.add({ title: "Retry refused", description: (err as Error).message, tone: "error" });
@@ -244,7 +248,7 @@ function EvaluationProgress({
 }: {
   job: EvaluationJob;
   meta: SessionMeta;
-  onRetry: () => void;
+  onRetry: (rounds: string[]) => void;
   retrying: boolean;
   sessionId: string;
 }) {
@@ -287,6 +291,11 @@ function EvaluationProgress({
                     {round.error} {round.recovery}
                   </span>
                 )}
+                {round.state === "failed" && job.state === "failed" && failed.length > 1 && (
+                  <Button size="sm" variant="outline" onClick={() => onRetry([round.round])} disabled={retrying}>
+                    <RotateCwIcon /> Retry this round
+                  </Button>
+                )}
               </li>
             ))}
           </ul>
@@ -298,7 +307,7 @@ function EvaluationProgress({
               {" "}No report is shown rather than a substitute.
             </p>
             <div className="flex flex-wrap gap-2">
-              <Button onClick={onRetry} disabled={retrying}>
+              <Button onClick={() => onRetry(failed.map((r) => r.round))} disabled={retrying}>
                 <RotateCwIcon /> {failed.length > 0 ? `Retry ${failed.length} failed round${failed.length === 1 ? "" : "s"}` : "Retry evaluation"}
               </Button>
               {job.transcript_available && <TranscriptButton sessionId={sessionId} />}
