@@ -409,6 +409,9 @@ export function SetupPage({ onStart, onOpenHistory }: SetupPageProps) {
               />
               <FieldDescription>
                 Picks the domain specialist's questions and rubric.
+                {family !== "software" && family !== "sales" && (
+                  <> Software and Sales are the most tested journeys; this profession’s questions and feedback have had less review.</>
+                )}
               </FieldDescription>
             </Field>
 
