@@ -53,7 +53,7 @@ Parameters:
     AllowedValues: [db.t4g.micro, db.t3.micro, db.t4g.small]
   DbEngineVersion:
     Type: String
-    Default: "16.4"
+    Default: "16.15"
     Description: Check availability first - aws rds describe-db-engine-versions --engine postgres --region <region>
   DbAllocatedGiB:
     Type: Number
