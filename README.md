@@ -1,5 +1,7 @@
 # Shadow Trace
 
+**Live demo: <https://shadowtrace-demo.duckdns.org/>** — version 0.4.0 (stage 16).
+
 Voice or text mock interviews built from **your own** background. Three
 interviewer roles — HR, hiring manager, domain specialist — run one after
 another and follow up on what you have actually done. Feedback quotes your
@@ -10,6 +12,7 @@ Scores are **experimental coaching indicators**. They are not hiring
 predictions, not judgements of truth or honesty, and have not been validated
 against human review. Nothing here screens, ranks or gates anyone.
 
+- Deployment, operations, backup and rollback: [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)
 - Design system (tokens, fonts, page compositions, motion): [`docs/DESIGN_SYSTEM.md`](docs/DESIGN_SYSTEM.md)
 - UI refresh, browser test evidence and local walkthrough: [`docs/UI_REFRESH.md`](docs/UI_REFRESH.md)
 - Architecture: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
@@ -19,6 +22,60 @@ against human review. Nothing here screens, ranks or gates anyone.
 - Evidence for this release: [`docs/decisions/stage16_upgrade.md`](docs/decisions/stage16_upgrade.md)
 - Hackathon provenance and judging map: [`docs/hackathon/`](docs/hackathon/)
 - Licences and attribution: [`docs/LICENSES.md`](docs/LICENSES.md)
+
+## Live deployment
+
+The demo runs at **<https://shadowtrace-demo.duckdns.org/>**: one AWS EC2 host
+behind Caddy (automatic HTTPS, required for the microphone), a single uvicorn
+worker, candidate data on an encrypted volume, and the report index in a private
+RDS PostgreSQL instance. Groq runs the interviewer and evaluator; Deepgram
+provides speech-to-text. It is a demo: one host, no autoscaling, guest data
+deleted after 30 days of inactivity.
+
+```text
+browser ──HTTPS/WSS──▶ Caddy (443) ──▶ uvicorn :8000 (one worker)
+                         │ serves client/dist      ├─▶ files: /var/lib/shadowtrace
+                         │                         └─▶ RDS PostgreSQL (private, TLS)
+```
+
+Check it is up: `curl https://shadowtrace-demo.duckdns.org/health`.
+
+Releases are built on a workstation and installed on the host with the
+scripts in `deploy/scripts/`:
+
+```bash
+deploy/scripts/build_release.sh                       # → dist-release/shadowtrace-<sha>.tar.gz + .sha256
+# copy both files to the host's /tmp (S3 or scp), then on the host:
+sha256sum -c /tmp/shadowtrace-<sha>.tar.gz.sha256
+tar -xzf /tmp/shadowtrace-<sha>.tar.gz -C /tmp
+sudo /tmp/shadowtrace-<sha>/deploy/scripts/install_release.sh /tmp/shadowtrace-<sha>.tar.gz --maintenance
+sudo /srv/shadowtrace/current/deploy/scripts/maintenance.sh off
+sudo /srv/shadowtrace/current/deploy/scripts/rollback.sh  # only if the new release misbehaves
+```
+
+`install_release.sh` verifies the checksum, builds the release's own venv,
+runs additive migrations, switches the `current` symlink and rolls back by
+itself if `/ready` fails. Full runbook: [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
+
+## How feedback is produced
+
+After the interview, each round (HR, hiring manager, specialist) is evaluated
+independently against its own rubric, and a finished round can be read before
+the others are done. The evaluator must return exactly one JSON report:
+
+- **Structured output.** JSON mode is always requested; models listed in
+  `EVAL_STRICT_SCHEMA_MODELS` also get strict JSON-schema output.
+- **Strict parsing.** One JSON object, optionally in one Markdown code fence.
+  Text around it or a second object is rejected, never "first object wins".
+- **One bounded repair.** An invalid or truncated (`finish_reason=length`)
+  reply gets one repair request naming the error; after that the round fails
+  with a reason and a **Retry this round** button. Retrying re-runs only the
+  failed round; finished rounds are kept.
+- **Evidence checks.** Every quote must be found in the named answer; a
+  dimension without verified evidence is "insufficient evidence", not a score.
+  Nothing is invented to make a reply pass.
+- **Safe diagnostics.** Each reply logs model, output mode, finish reason,
+  reply length, outcome and duration, never the transcript or the reply text.
 
 ## Requirements
 
@@ -91,8 +148,12 @@ environment setting. Every variable is listed with its meaning in
 | `LIVE_MODEL_DEADLINE_S` | `10` | Whole budget for one interviewer decision, retries and fallback included |
 | `GROQ_REQUESTS_PER_MINUTE` | `30` | Client-side cap; keep at or below your account's limit |
 | `MAX_MODEL_CALLS_PER_TURN` | `3` | Hard cap on model calls per live turn |
+| `MODEL_EVALUATOR` / `MODEL_FALLBACK_QUALITY` | `openai/gpt-oss-120b` / `qwen/qwen3.8-27b` | Evaluator model and its fallback |
+| `MODEL_LIVE_INTERVIEWER` / `MODEL_FALLBACK_FAST` | `openai/gpt-oss-20b` / `qwen/qwen3.8-27b` | Interviewer model and its fallback |
 | `EVAL_MAX_REPAIRS` | `1` | Re-asks after invalid/truncated evaluator JSON |
+| `EVAL_STRICT_SCHEMA_MODELS` | `openai/gpt-oss-20b,openai/gpt-oss-120b,qwen/qwen3.8-27b` | Models given strict JSON-schema output; others get JSON-object mode. Empty = JSON-object mode everywhere |
 | `EVAL_ROUND_DEADLINE_S` / `EVAL_JOB_DEADLINE_S` | `150` / `240` | Evaluation time budgets |
+| `DATABASE_URL` | empty | Empty = SQLite under `DATA_DIR` (development); `postgresql://…` in production |
 | `GUEST_RETENTION_DAYS` | `30` | Inactive guest data is deleted after this many days (`0` = never) |
 
 ## Verify
@@ -104,6 +165,7 @@ python tools\check_providers.py                   # authenticated provider check
 python tools\bench_feedback.py --sessions 6 --live   # BILLABLE: feedback latency on the real evaluator
 python tools\run_eval_set.py --live --out logs\eval_set\live   # BILLABLE: evaluation set
 python tools\live_journey_smoke.py --out logs\live_journey     # BILLABLE: intake→interview→report
+python tools\ops\probe_eval_output.py              # BILLABLE: evaluator structured output, synthetic transcript
 ```
 
 The test suite blanks provider keys from `.env` (`tests/conftest.py`) and never
@@ -113,7 +175,8 @@ calls a provider.
 
 Use real keys (`/health` shows `interviewer: groq`, `evaluator: groq`).
 
-1. **Home and intake.** Open `http://localhost:5173` and click **Prepare my interview**. Paste a short background or upload a resume, pick *Software* or
+1. **Home and intake.** Open <https://shadowtrace-demo.duckdns.org/> (or
+   `http://localhost:5173` locally) and click **Prepare my interview**. Paste a short background or upload a resume, pick *Software* or
    *Sales*, round *Full interview* (or one round to be quick), *Type* or *Speak*.
    Read and tick the consent box — it names Groq and Deepgram, the guest-key
    limits and the retention period.
