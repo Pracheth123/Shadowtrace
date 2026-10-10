@@ -4,6 +4,16 @@ Feedback latency benchmark — the real evaluation job service, end to end.
     python tools/bench_feedback.py --sessions 6 --live --out logs/bench_feedback
     python tools/bench_feedback.py --sessions 3 --out logs/bench_feedback_mock   # offline
 
+Controlled load (roadmap item 6): enqueue PARALLEL sessions at once and compare
+evaluation concurrency settings (EVAL_CONCURRENCY) one after another:
+
+    python tools/bench_feedback.py --sessions 6 --parallel 3 --concurrency 1,2,3 --live
+    python tools/bench_feedback.py --sessions 6 --parallel 3 --concurrency 1,2,3 --simulated-latency-s 2
+
+`--simulated-latency-s` adds a fixed sleep to every mock evaluator call. It
+checks scheduling behaviour (slot waits, first-result ordering) offline; its
+timings are simulated and must never be reported as provider latency.
+
 Builds full three-round sessions (HR → hiring manager → specialist) from the
 evaluation set's strong and incomplete answers, alternating software and sales,
 then runs `EvaluationService` exactly as the server does after an interview:
@@ -66,7 +76,28 @@ def build_transcript(family: str, pool: list[dict], index: int) -> list[dict]:
     return transcript
 
 
-async def run(sessions: int, live: bool, out: Path) -> dict:
+def mock_evaluator(simulated_latency_s: float):
+    from interview.evaluation.role_eval import MockEvaluator
+
+    class SimulatedLatencyMock(MockEvaluator):
+        model = f"mock-evaluator + simulated {simulated_latency_s}s latency (not a provider measurement)"
+
+        async def complete(self, messages):
+            await asyncio.sleep(simulated_latency_s)
+            return await super().complete(messages)
+
+    return SimulatedLatencyMock() if simulated_latency_s > 0 else MockEvaluator()
+
+
+async def run(
+    sessions: int,
+    live: bool,
+    out: Path,
+    *,
+    concurrency: int | None = None,
+    parallel: int = 1,
+    simulated_latency_s: float = 0.0,
+) -> dict:
     from interview.config import get_settings
 
     settings = get_settings()
@@ -76,15 +107,47 @@ async def run(sessions: int, live: bool, out: Path) -> dict:
 
         evaluator = GroqEvaluator(GroqModelClient(), max_tokens=settings.eval_max_tokens)
     else:
-        from interview.evaluation.role_eval import MockEvaluator
-
-        evaluator = MockEvaluator()
+        evaluator = mock_evaluator(simulated_latency_s)
     pool = examples()
     root = Path(tempfile.mkdtemp(prefix="bench_feedback_"))
     registry = CandidateRegistry(root / "candidates")
     store = ReportStore(root / "reports.sqlite")
     service = EvaluationService(registry, store, lambda: evaluator)
+    service.concurrency = concurrency
     rows = []
+    pending: list[tuple] = []
+
+    def record(session_id, directory, family, transcript, wall) -> None:
+        meta = read_json(directory / "meta.json", {})
+        evaluation = meta.get("evaluation") or {}
+        timings = evaluation.get("timings") or {}
+        rounds = evaluation.get("rounds") or []
+        row = {
+            "session": session_id,
+            "family": family,
+            "state": meta.get("state"),
+            "rounds": len(rounds),
+            "transcript_turns": len(transcript),
+            "transcript_chars": sum(len(t["text"]) for t in transcript),
+            "first_result_s": timings.get("first_result_s"),
+            "report_s": timings.get("report_s"),
+            "wall_s": round(time.perf_counter() - wall, 2),
+            "round_detail": [
+                {k: r.get(k) for k in ("round", "state", "category", "elapsed_s", "queue_delay_s", "slot_wait_s",
+                                       "replies", "repairs", "provider_attempts", "limiter_wait_s", "request_s",
+                                       "model_used", "fallback_used", "usage")}
+                for r in rounds
+            ],
+        }
+        rows.append(row)
+        print(f"{session_id} {family:8s} {row['state']:9s} first={row['first_result_s']} "
+              f"report={row['report_s']} wall={row['wall_s']}")
+
+    async def settle(batch: list[tuple]) -> None:
+        await asyncio.gather(*(service.wait(item[0]) for item in batch))
+        for session_id, directory, family, transcript, wall in batch:
+            record(session_id, directory, family, transcript, wall)
+
     for index in range(sessions):
         family = "software" if index % 2 == 0 else "sales"
         guest = registry.create_guest()
@@ -114,30 +177,12 @@ async def run(sessions: int, live: bool, out: Path) -> dict:
         )
         wall = time.perf_counter()
         service.enqueue(guest.candidate_id, session_id)
-        await service.wait(session_id)
-        meta = read_json(directory / "meta.json", {})
-        evaluation = meta.get("evaluation") or {}
-        timings = evaluation.get("timings") or {}
-        rounds = evaluation.get("rounds") or []
-        row = {
-            "session": session_id,
-            "family": family,
-            "state": meta.get("state"),
-            "rounds": len(rounds),
-            "transcript_turns": len(transcript),
-            "transcript_chars": sum(len(t["text"]) for t in transcript),
-            "first_result_s": timings.get("first_result_s"),
-            "report_s": timings.get("report_s"),
-            "wall_s": round(time.perf_counter() - wall, 2),
-            "round_detail": [
-                {k: r.get(k) for k in ("round", "state", "category", "elapsed_s", "queue_delay_s", "replies",
-                                       "repairs", "provider_attempts", "limiter_wait_s", "request_s",
-                                       "model_used", "fallback_used", "usage")}
-                for r in rounds
-            ],
-        }
-        rows.append(row)
-        print(f"{session_id} {family:8s} {row['state']:9s} first={row['first_result_s']} report={row['report_s']} wall={row['wall_s']}")
+        pending.append((session_id, directory, family, transcript, wall))
+        if len(pending) >= max(1, parallel):
+            await settle(pending)
+            pending = []
+    if pending:
+        await settle(pending)
 
     def stats(key: str) -> dict:
         values = sorted(r[key] for r in rows if isinstance(r.get(key), (int, float)) and r["state"] == "complete")
@@ -155,7 +200,9 @@ async def run(sessions: int, live: bool, out: Path) -> dict:
     summary = {
         "when": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "live": live,
+        "simulated_latency_s": simulated_latency_s if not live else None,
         "evaluator": f"{evaluator.provider}:{evaluator.model}",
+        "load": {"parallel_sessions": parallel, "eval_concurrency": concurrency or settings.eval_concurrency},
         "settings": {
             "requests_per_minute": settings.groq_requests_per_minute,
             "max_retries": settings.groq_max_retries,
@@ -176,7 +223,8 @@ async def run(sessions: int, live: bool, out: Path) -> dict:
         "rows": rows,
     }
     out.mkdir(parents=True, exist_ok=True)
-    path = out / f"bench_{'live' if live else 'mock'}_{int(time.time())}.json"
+    tag = f"c{concurrency or settings.eval_concurrency}_p{parallel}"
+    path = out / f"bench_{'live' if live else 'mock'}_{tag}_{int(time.time())}.json"
     path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(json.dumps({k: v for k, v in summary.items() if k != "rows"}, indent=2))
     print(f"wrote {path}")
@@ -188,8 +236,26 @@ def main() -> int:
     parser.add_argument("--sessions", type=int, default=6)
     parser.add_argument("--live", action="store_true", help="real Groq evaluator (billable)")
     parser.add_argument("--out", default="logs/bench_feedback")
+    parser.add_argument("--parallel", type=int, default=1, help="sessions enqueued at once (controlled load)")
+    parser.add_argument("--concurrency", default="", help="EVAL_CONCURRENCY values to compare, e.g. 1,2,3")
+    parser.add_argument("--simulated-latency-s", type=float, default=0.0,
+                        help="offline only: fixed sleep per mock evaluator call (scheduling check, not latency)")
     args = parser.parse_args()
-    asyncio.run(run(args.sessions, args.live, Path(args.out)))
+    if args.live and args.simulated_latency_s:
+        parser.error("--simulated-latency-s is for the offline mock only")
+    levels = [int(v) for v in args.concurrency.split(",") if v.strip()] or [None]
+    results = []
+    for level in levels:
+        summary = asyncio.run(run(args.sessions, args.live, Path(args.out), concurrency=level,
+                                  parallel=args.parallel, simulated_latency_s=args.simulated_latency_s))
+        results.append((level, summary))
+    if len(results) > 1:
+        kind = "LIVE" if args.live else "SIMULATED (offline mock; not provider latency)"
+        print(f"\nconcurrency  first_result p50/p95  report p50/p95  failed  n   [parallel={args.parallel}, {kind}]")
+        for level, summary in results:
+            f, r = summary["first_result_s"], summary["report_s"]
+            print(f"{level!s:>11}  {f.get('median')}/{f.get('p95_nearest_rank')}"
+                  f"  {r.get('median')}/{r.get('p95_nearest_rank')}  {len(summary['failed'])}  {summary['completed']}")
     return 0
 
 

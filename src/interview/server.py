@@ -343,7 +343,21 @@ async def health():
 @app.get("/api/diagnostics")
 async def diagnostics():
     """Effective configuration and readiness. Never contains a secret."""
-    return diag.readiness(get_settings())
+    from interview.llm.client import get_shared_limiter
+
+    settings = get_settings()
+    return {
+        **diag.readiness(settings),
+        # Live process state: counts only, no candidate or request content.
+        "runtime": {
+            "live_sessions": SESSION_CAP.live,
+            "session_limit": SESSION_CAP.limit,
+            "evaluation_jobs_active": EVALUATION.active_jobs(),
+            "evaluation_queue_max": settings.eval_queue_max,
+            "evaluation_concurrency": EVALUATION.concurrency or settings.eval_concurrency,
+            "model_limiter": get_shared_limiter(settings.groq_requests_per_minute).snapshot(),
+        },
+    }
 
 
 @app.post("/api/diagnostics/verify")
