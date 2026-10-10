@@ -17,3 +17,4 @@ data/
 # Frontend installs and build state
 node_modules/
 *.tsbuildinfo
+dist-release/
