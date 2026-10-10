@@ -13,7 +13,7 @@ New-Item -ItemType Directory -Force (Join-Path $stage $name) | Out-Null
 try {
   Push-Location client; npm ci; if ($LASTEXITCODE) { throw "npm ci failed" }; npm run build; if ($LASTEXITCODE) { throw "build failed" }; Pop-Location
   $tarFile = Join-Path $stage "src.tar"
-  git archive --format=tar -o $tarFile HEAD src pyproject.toml requirements-lock.txt requirements-postgres.txt README.md config deploy tools/ops docs/DEPLOYMENT.md
+  git -c core.autocrlf=false archive --format=tar -o $tarFile HEAD src pyproject.toml requirements-lock.txt requirements-postgres.txt README.md config deploy tools/ops docs/DEPLOYMENT.md
   tar -xf $tarFile -C (Join-Path $stage $name); Remove-Item $tarFile
   New-Item -ItemType Directory -Force (Join-Path $stage "$name\client") | Out-Null
   Copy-Item -Recurse client\dist (Join-Path $stage "$name\client\dist")

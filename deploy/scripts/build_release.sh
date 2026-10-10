@@ -25,7 +25,7 @@ else
 fi
 
 mkdir -p "$STAGE/shadowtrace-$SHA"
-git archive HEAD src pyproject.toml requirements-lock.txt requirements-postgres.txt README.md \
+git -c core.autocrlf=false archive HEAD src pyproject.toml requirements-lock.txt requirements-postgres.txt README.md \
   config deploy tools/ops docs/DEPLOYMENT.md | tar -x -C "$STAGE/shadowtrace-$SHA"
 mkdir -p "$STAGE/shadowtrace-$SHA/client"
 cp -r client/dist "$STAGE/shadowtrace-$SHA/client/dist"
