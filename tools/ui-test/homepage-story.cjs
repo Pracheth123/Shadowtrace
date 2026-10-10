@@ -51,6 +51,18 @@ const layoutProblems = (page) => page.evaluate(() => {
   return issues;
 });
 
+// Visibility and inertness of both story cards, read together.
+const cardStates = (page) => page.evaluate(() => [...document.querySelectorAll('.story-card-wrap')].map((el) => ({ card: el.dataset.card, opacity: +getComputedStyle(el).opacity, inert: el.inert, ariaHidden: el.getAttribute('aria-hidden') === 'true' })));
+// Press Tab (or Shift+Tab) n times from the current focus; record where focus lands.
+const tabWalk = async (page, n, shift = false) => {
+  const seen = [];
+  for (let i = 0; i < n; i++) {
+    await page.keyboard.press(shift ? 'Shift+Tab' : 'Tab');
+    seen.push(await page.evaluate(() => { const a = document.activeElement; const wrap = a.closest('.story-card-wrap'); return { text: (a.textContent || '').trim().slice(0, 40), role: a.getAttribute('role'), inCard: wrap ? wrap.dataset.card : null, cardOpacity: wrap ? +getComputedStyle(wrap).opacity : null, body: a === document.body }; }));
+  }
+  return seen;
+};
+
 const server = spawn(process.execPath, [path.join(root, 'client/node_modules/vite/bin/vite.js'), 'preview', '--host', '127.0.0.1', '--port', '4173', '--strictPort'], { cwd: path.join(root, 'client'), stdio: 'ignore' });
 let browser;
 (async () => { try {
@@ -193,12 +205,37 @@ let browser;
     await page.evaluate(() => scrollTo(0, 0)); await wait(300);
   });
 
-  await check('Step buttons jump to each stage; tabbing into the card brings it on stage', async () => {
+  await check('Step buttons jump to each stage; the interview card becomes focusable only once it is on stage', async () => {
     for (const [i, name] of [[1, /Start with your experience/], [3, /Find your next clearer answer/], [0, /You’ve done the work\./]]) {
       await page.getByRole('button', { name }).click(); await page.waitForFunction((i) => document.querySelector('.story').dataset.stage === String(i), i, { timeout: 4000 });
     }
-    await page.getByRole('tab', { name: 'Hiring manager', exact: true }).focus();
+    // Stage 0: the hidden card is inert, so focus() is refused (it used to succeed and pull the card on stage).
+    // It is also out of the accessibility tree, so role queries cannot find it at all.
+    assert.equal(await page.getByRole('tab').count(), 0);
+    await page.locator('[data-card=interview] [role=tab]').nth(1).evaluate((el) => el.focus());
+    assert.notEqual(await page.evaluate(() => document.activeElement.getAttribute('role')), 'tab', 'hidden tab took focus');
+    await page.getByRole('button', { name: /Experience becomes a question/ }).click();
     await page.waitForFunction(() => document.querySelector('.story').dataset.stage === '2', null, { timeout: 4000 });
+    await page.waitForFunction(() => !document.querySelector('[data-card=interview]').inert, null, { timeout: 4000 });
+    await page.getByRole('tab', { name: 'Hiring manager', exact: true }).focus();
+    assert.equal(await page.evaluate(() => document.activeElement.textContent), 'Hiring manager');
+  });
+
+  await check('Pinned: inert/aria-hidden always match card visibility at every stage', async () => {
+    for (const v of [0.02, 0.35, 0.64, 0.93, 0.5, 0.17, 0.78]) {
+      await toProgress(page, v); await wait(250);
+      const cards = await cardStates(page);
+      for (const c of cards) assert.equal(c.inert, c.opacity <= 0.5, `${c.card} at ${v}: opacity ${c.opacity} inert ${c.inert}`);
+      for (const c of cards) assert.equal(c.ariaHidden, c.inert, `${c.card} aria-hidden at ${v}`);
+    }
+  });
+
+  await check('Pinned: focus inside the interview card moves to a step button when the card hides', async () => {
+    await toProgress(page, 0.64); await wait(300);
+    await page.getByRole('tab', { name: 'Hiring manager', exact: true }).focus();
+    await page.evaluate(() => scrollTo(0, 0)); await wait(400);
+    const where = await page.evaluate(() => ({ inSteps: !!document.activeElement.closest('.story-steps'), body: document.activeElement === document.body, inCard: !!document.activeElement.closest('.story-card-wrap') }));
+    assert.deepEqual(where, { inSteps: true, body: false, inCard: false });
   });
 
   await check('Skip visual story moves focus past the scene without changing the hash route', async () => {
@@ -232,6 +269,10 @@ let browser;
 
   await check('Real CTAs open setup and history', async () => {
     await page.getByRole('button', { name: 'Prepare my interview' }).click(); await page.waitForFunction(() => location.hash === '#setup');
+    // Route cleanup: the story unmounts with no inert residue, and comes back coherent.
+    assert.equal(await page.locator('.story').count(), 0); assert.equal(await page.locator('[inert]').count(), 0);
+    await page.goBack(); await page.waitForFunction(() => document.querySelector('.story')?.dataset.stage);
+    for (const c of await cardStates(page)) assert.equal(c.inert, c.opacity <= 0.5, `after back: ${c.card}`);
     await page.goto(URL); await page.locator('.home-nav').getByRole('button', { name: 'Your history' }).click(); await page.waitForFunction(() => location.hash === '#history');
   });
   const desktopVideo = page.video(); await desktop.close();
@@ -311,6 +352,39 @@ let browser;
   const mobileVideo = mp.video(); await mobile.close();
   fs.renameSync(await mobileVideo.path(), out + '/story-mobile.webm');
 
+  // ================= Compact keyboard focus: the regression axe missed
+  await check('Compact stage 4: Tab and Shift+Tab never reach the invisible interviewer card', async () => {
+    const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } }); const p = await ctx.newPage();
+    p.on('pageerror', (e) => results.errors.push(e.message));
+    await p.goto(URL); await p.waitForTimeout(1500);
+    await p.getByRole('button', { name: /Find your next clearer answer/ }).click(); await wait(1500);
+    assert.equal(await stage(p), '3');
+    const cards = Object.fromEntries((await cardStates(p)).map((c) => [c.card, c]));
+    assert.equal(cards.interview.opacity, 0); assert.equal(cards.interview.inert, true); assert.equal(cards.interview.ariaHidden, true);
+    assert.equal(cards.feedback.opacity, 1); assert.equal(cards.feedback.inert, false);
+    // The hidden tablist is gone from the accessibility tree.
+    assert.equal(await p.getByRole('tab').count(), 0);
+    await p.getByRole('button', { name: 'Skip visual story' }).focus();
+    const forward = await tabWalk(p, 4);
+    results.measurements.compactStage4TabOrder = forward.map((f) => f.text);
+    assert(forward.every((f) => !f.inCard && !f.body && f.role !== 'tab'), 'Tab reached hidden card: ' + JSON.stringify(forward));
+    const back = await tabWalk(p, 4, true);
+    assert(back.every((f) => !f.inCard && !f.body && f.role !== 'tab'), 'Shift+Tab reached hidden card: ' + JSON.stringify(back));
+    assert(back.some((f) => f.text === 'Skip visual story'), 'Shift+Tab returns to the skip action');
+    // Stage 3 again: the card is visible and its tabs are reachable straight after the skip action.
+    await p.getByRole('button', { name: /Experience becomes a question/ }).click(); await wait(1500);
+    assert.equal((await cardStates(p)).find((c) => c.card === 'interview').inert, false);
+    await p.getByRole('button', { name: 'Skip visual story' }).focus();
+    const visible = await tabWalk(p, 1);
+    assert.equal(visible[0].role, 'tab'); assert.equal(visible[0].inCard, 'interview');
+    await p.keyboard.press('ArrowRight'); assert.equal(await p.evaluate(() => document.activeElement.textContent), 'Specialist');
+    // Focus inside the card while a step control hides it: focus lands on a step button, not <body>.
+    await p.evaluate(() => document.querySelectorAll('.story-steps button')[0].click()); await wait(1500);
+    const where = await p.evaluate(() => ({ inSteps: !!document.activeElement.closest('.story-steps'), body: document.activeElement === document.body }));
+    assert.deepEqual(where, { inSteps: true, body: false });
+    await ctx.close();
+  });
+
   // ================= Reduced motion
   for (const [w, h] of [[1440, 900], [390, 844]]) {
     const ctx = await browser.newContext({ viewport: { width: w, height: h }, reducedMotion: 'reduce' }); const p = await ctx.newPage();
@@ -319,6 +393,7 @@ let browser;
       assert.equal(await p.locator('.story').getAttribute('data-mode'), 'static');
       assert.equal(await p.locator('.paper-flight').count(), 0);
       assert.equal(await p.locator('.story-static-panel').count(), 4);
+      assert.equal(await p.locator('.story [inert], .story [aria-hidden=true] [role=tab]').count(), 0, 'static panels stay focusable');
       assert.notEqual(await p.locator('.story-sticky').evaluate((el) => getComputedStyle(el).position), 'sticky');
       const moving = await p.evaluate(() => [...document.querySelectorAll('.story *')].filter((el) => { const t = getComputedStyle(el).transform; return t !== 'none' && !/^matrix\(1, 0, 0, 1, 0, 0\)$/.test(t); }).length);
       assert.equal(moving, 0, 'no transformed (rotated or offset) elements');
