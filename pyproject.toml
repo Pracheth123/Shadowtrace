@@ -48,6 +48,13 @@ test = [
     "pytest>=7.0",
     "pytest-asyncio>=0.23",
 ]
+# PostgreSQL report index (DATABASE_URL). Not needed for local SQLite development.
+# psycopg 3 (sync API + pool): the server calls it through asyncio.to_thread, so the
+# async driver's Windows event-loop restriction never applies.
+postgres = [
+    "psycopg[binary]==3.3.6",
+    "psycopg-pool==3.3.3",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -14,6 +14,12 @@ comparison instead.
 Writes are idempotent per session: a retried evaluation replaces that session's
 rows, so it cannot count twice.
 
+Backends (October 10): this module is the SQLite implementation, used for
+local development and tests. `interview.storage.reports_pg.PostgresReportStore`
+implements the same interface on PostgreSQL; `interview.storage.open_report_store`
+selects one from settings. Both build their rows with `report_rows`, so a
+report produces the same records on either backend.
+
 Stage 16 migration (applied automatically on open, idempotent): adds
 `session_reports.session_kind` ('interview' | 'practice', default 'interview')
 and `report_gaps.finding_id`. Practice attempts are stored so they can be
@@ -95,7 +101,81 @@ def compat_key(report: dict) -> tuple[str, str]:
     return signature, key
 
 
+def report_rows(candidate_id: str, report: dict) -> tuple[tuple, list[tuple], list[tuple]]:
+    """
+    (session row, dimension rows, gap rows) for one report, in column order:
+
+      session_reports: session_id, candidate_id, intake_id, created_at,
+        target_role, role_family, round_selection, lane, intensity, seniority,
+        rubric_signature, evaluator_provider, compat_key, overall_score,
+        ended_reason, session_kind
+      round_dimension_scores: session_id, round, rubric_version, dimension_id,
+        label, level, score
+      report_gaps: session_id, gap_index, round, dimension_id, dimension_label,
+        explanation, quote, turn_id, finding_id
+    """
+    signature, key = compat_key(report)
+    cfg = report.get("config") or {}
+    session_id = report["session_id"]
+    session = (
+        session_id,
+        candidate_id,
+        report.get("intake_id"),
+        report.get("session_started_at") or report.get("created_at", ""),
+        str(cfg.get("target_role") or ""),
+        str(cfg.get("role_family") or ""),
+        str(cfg.get("round") or ""),
+        str(report.get("lane") or ""),
+        str(cfg.get("intensity") or ""),
+        str(cfg.get("seniority") or ""),
+        signature,
+        (report.get("evaluator") or {}).get("provider", ""),
+        key,
+        (report.get("overall") or {}).get("score"),
+        str(report.get("ended_reason") or ""),
+        str(report.get("session_kind") or "interview"),
+    )
+    dimensions = [
+        (
+            session_id,
+            result["round"],
+            result["rubric_version"],
+            dim["dimension_id"],
+            dim["label"],
+            dim["level"],
+            dim["score"] if dim.get("assessed") else None,
+        )
+        for result in report.get("rounds", [])
+        for dim in result.get("dimensions", [])
+    ]
+    gaps = [
+        finding
+        for result in report.get("rounds", [])
+        for finding in result.get("findings", [])
+        if finding.get("polarity") == "gap"
+    ]
+    gap_rows = [
+        (
+            session_id,
+            index,
+            gap["round"],
+            gap["dimension_id"],
+            gap["dimension_label"],
+            gap["explanation"],
+            gap["quote"],
+            gap["turn_id"],
+            str(gap.get("finding_id") or ""),
+        )
+        for index, gap in enumerate(gaps)
+    ]
+    return session, dimensions, gap_rows
+
+
 class ReportStore:
+    """SQLite report store (development, tests, single-host fallback)."""
+
+    backend = "sqlite"
+
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -116,16 +196,14 @@ class ReportStore:
         return conn
 
     def record(self, candidate_id: str, report: dict) -> None:
-        signature, key = compat_key(report)
-        cfg = report.get("config") or {}
-        session_id = report["session_id"]
-        gaps = [
-            finding
-            for result in report.get("rounds", [])
-            for finding in result.get("findings", [])
-            if finding.get("polarity") == "gap"
-        ]
+        session, dimensions, gaps = report_rows(candidate_id, report)
+        session_id = session[0]
         with self._connect() as conn:
+            owner = conn.execute(
+                "SELECT candidate_id FROM session_reports WHERE session_id = ?", (session_id,)
+            ).fetchone()
+            if owner is not None and owner[0] != candidate_id:
+                raise PermissionError("session belongs to another candidate")
             for table in TABLES:
                 conn.execute(f"DELETE FROM {table} WHERE session_id = ?", (session_id,))
             conn.execute(
@@ -136,24 +214,7 @@ class ReportStore:
                     compat_key, overall_score, ended_reason, session_kind)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (
-                    session_id,
-                    candidate_id,
-                    report.get("intake_id"),
-                    report.get("session_started_at") or report.get("created_at", ""),
-                    str(cfg.get("target_role") or ""),
-                    str(cfg.get("role_family") or ""),
-                    str(cfg.get("round") or ""),
-                    str(report.get("lane") or ""),
-                    str(cfg.get("intensity") or ""),
-                    str(cfg.get("seniority") or ""),
-                    signature,
-                    (report.get("evaluator") or {}).get("provider", ""),
-                    key,
-                    (report.get("overall") or {}).get("score"),
-                    str(report.get("ended_reason") or ""),
-                    str(report.get("session_kind") or "interview"),
-                ),
+                session,
             )
             conn.executemany(
                 """
@@ -161,19 +222,7 @@ class ReportStore:
                     (session_id, round, rubric_version, dimension_id, label, level, score)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                [
-                    (
-                        session_id,
-                        result["round"],
-                        result["rubric_version"],
-                        dim["dimension_id"],
-                        dim["label"],
-                        dim["level"],
-                        dim["score"] if dim.get("assessed") else None,
-                    )
-                    for result in report.get("rounds", [])
-                    for dim in result.get("dimensions", [])
-                ],
+                dimensions,
             )
             conn.executemany(
                 """
@@ -181,20 +230,7 @@ class ReportStore:
                     dimension_label, explanation, quote, turn_id, finding_id)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                [
-                    (
-                        session_id,
-                        index,
-                        gap["round"],
-                        gap["dimension_id"],
-                        gap["dimension_label"],
-                        gap["explanation"],
-                        gap["quote"],
-                        gap["turn_id"],
-                        str(gap.get("finding_id") or ""),
-                    )
-                    for index, gap in enumerate(gaps)
-                ],
+                gaps,
             )
 
     def sessions(self, candidate_id: str, *, kind: str | None = "interview") -> list[dict]:
@@ -253,4 +289,40 @@ class ReportStore:
         return deleted
 
 
-__all__ = ["ReportStore", "TABLES", "compat_key"]
+    # -- operations surface shared with the PostgreSQL store ----------------
+
+    def index_rows(self) -> list[tuple[str, str]]:
+        """(session_id, candidate_id) for every indexed session (reconciliation)."""
+        with self._connect() as conn:
+            return [(r[0], r[1]) for r in conn.execute("SELECT session_id, candidate_id FROM session_reports")]
+
+    def counts(self) -> dict[str, int]:
+        with self._connect() as conn:
+            return {t: conn.execute(f"SELECT count(*) FROM {t}").fetchone()[0]
+                    for t in ("session_reports", "round_dimension_scores", "report_gaps")}
+
+    def ping(self) -> bool:
+        """True if the store answers a trivial query."""
+        try:
+            conn = sqlite3.connect(self.path, timeout=2)
+            try:
+                conn.execute("select 1").fetchone()
+            finally:
+                conn.close()
+            return True
+        except sqlite3.Error:
+            return False
+
+    def schema_ready(self) -> bool:
+        """SQLite migrates itself on open."""
+        return True
+
+    def describe(self) -> dict:
+        """Operational description; never contains a credential."""
+        return {"backend": self.backend, "path": str(self.path)}
+
+    def close(self) -> None:
+        """Nothing pooled; connections are per call."""
+
+
+__all__ = ["ReportStore", "TABLES", "compat_key", "report_rows"]

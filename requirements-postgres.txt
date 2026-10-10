@@ -1,0 +1,7 @@
+# PostgreSQL extra, pinned (captured 2026-10-10, Python 3.12.8, Windows x64; the same
+# pins install on Linux x86_64/aarch64, which have binary wheels for these versions).
+# Install after requirements-lock.txt:  pip install -r requirements-postgres.txt
+psycopg==3.3.6
+psycopg-binary==3.3.6
+psycopg-pool==3.3.3
+tzdata==2026.5 ; sys_platform == "win32"

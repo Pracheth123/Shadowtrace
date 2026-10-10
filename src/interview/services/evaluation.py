@@ -129,8 +129,12 @@ def default_evaluator(*, use_mock_llm: bool) -> EvaluatorModel:
 
 def build_services(root: Path, *, use_mock_llm: Callable[[], bool]):
     """Registry, report store and evaluation service rooted at `root`."""
+    from interview.config import get_settings
+    from interview.storage import open_report_store
+
     registry = CandidateRegistry(Path(root) / "candidates")
-    store = ReportStore(Path(root) / "reports.sqlite")
+    # SQLite in DATA_DIR, or PostgreSQL when DATABASE_URL is set (storage/).
+    store = open_report_store(get_settings(), Path(root))
     service = EvaluationService(
         registry, store, lambda: default_evaluator(use_mock_llm=use_mock_llm())
     )
@@ -714,7 +718,8 @@ class EvaluationService:
         if not self._alive(candidate_id):
             raise CandidateGone(candidate_id)
         (out / "scorecard.html").write_text(render_scorecard(payload), encoding="utf-8")
-        self.store.record(candidate_id, payload)
+        # Off the event loop: a PostgreSQL round trip must not stall live sessions.
+        await asyncio.to_thread(self.store.record, candidate_id, payload)
         current = read_json(directory / "meta.json", {}) or {}
         ev = dict(current.get("evaluation") or {})
         tm = dict(ev.get("timings") or {})
