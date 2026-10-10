@@ -31,6 +31,9 @@ if [ ! -d "$DEST" ]; then
   "$DEST/.venv/bin/python" -m pip install -q -r "$DEST/requirements-lock.txt" -r "$DEST/requirements-postgres.txt"
   "$DEST/.venv/bin/python" -m pip install -q --no-deps "$DEST"
   chown -R root:shadowtrace "$DEST"; chmod -R g+rX,o-rwx "$DEST"
+  # Caddy (its own user) serves the public static build: traverse the release
+  # directory without listing it, and read client/ only. Code and venv stay private.
+  chmod o+x "$DEST"; chmod -R o+rX "$DEST/client"
 fi
 sed -i "s/^GIT_SHA=.*/GIT_SHA=$SHA/" /etc/shadowtrace/shadowtrace.env
 

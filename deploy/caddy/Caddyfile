@@ -4,6 +4,14 @@
 interview.example.org {
 	encode zstd gzip
 
+	# Diagnostics are for operators (use 127.0.0.1:8000 on the host). This handle
+	# comes first: Caddy runs `handle` before `respond`, so a bare respond after
+	# the API handle would never fire.
+	@diagnostics path /api/diagnostics /api/diagnostics/*
+	handle @diagnostics {
+		respond "Not found" 404
+	}
+
 	# API, WebSocket and health/readiness go to the single uvicorn worker.
 	# WebSocket upgrades are proxied automatically; no read timeout is applied
 	# to an upgraded connection, so a 15-minute interview is not cut off.
@@ -21,10 +29,6 @@ interview.example.org {
 			stream_close_delay 20m
 		}
 	}
-
-	# Diagnostics are for operators; do not expose them publicly.
-	@diagnostics path /api/diagnostics /api/diagnostics/*
-	respond @diagnostics 404
 
 	# The built React app. Hashed assets are immutable; index.html is not cached.
 	handle {

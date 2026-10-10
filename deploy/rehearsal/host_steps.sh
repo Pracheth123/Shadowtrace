@@ -8,7 +8,7 @@ pass() { echo "PASS  $*"; }
 fail() { echo "FAIL  $*"; exit 1; }
 
 echo "== host bootstrap (as UserData would)"
-dnf -y -q install python3.12 python3.12-pip tar gzip shadow-utils procps-ng iproute postgresql16 libcap openssl findutils >/dev/null
+dnf -y -q install python3.12 python3.12-pip tar gzip shadow-utils procps-ng iproute postgresql16 libcap openssl findutils util-linux >/dev/null
 useradd --system --home-dir /srv/shadowtrace --shell /sbin/nologin shadowtrace
 useradd --system --home-dir /var/lib/caddy --create-home --shell /sbin/nologin caddy
 mkdir -p /srv/shadowtrace/releases /etc/shadowtrace /etc/caddy /var/log/caddy /var/lib/shadowtrace/{data,logs,ledger,backups,legacy-reports,legacy-intake}
@@ -16,7 +16,7 @@ chown -R shadowtrace:shadowtrace /var/lib/shadowtrace; chmod 750 /var/lib/shadow
 install -m 0644 /tmp/rds-ca.pem /etc/shadowtrace/rds-ca.pem
 ARCH=$(uname -m); case "$ARCH" in x86_64) CA=amd64; SUM=8220d1f013b6f27510247b2360c9e0ca9f018feebd82515f07635318b34ff9777ccc8fd0b6e6f2486ce3a33fe389fbb7db12d05baa474f4587509fb4f5ebf1c9;; aarch64) CA=arm64; SUM=d5a7c423853c24a799765e0e8210d5c7c22a8f56ed37a3cae2fb9f58be138853c02b4efd6b59d576e6d8c7c0d30b9c1592deeaa6a536ff69bcca23b8c1ea709c;; esac
 cd /tmp && curl -fsSLO "https://github.com/caddyserver/caddy/releases/download/v2.11.4/caddy_2.11.4_linux_$CA.tar.gz"
-echo "$SUM  caddy_2.11.4_linux_$CA.tar.gz" | sha512sum -c - >/dev/null && pass "Caddy 2.11.4 checksum verified"
+echo "$SUM  caddy_2.11.4_linux_$CA.tar.gz" | sha512sum -c - >/dev/null && pass "Caddy 2.11.4 checksum verified" || fail "Caddy 2.11.4 checksum verified"
 tar -xzf "caddy_2.11.4_linux_$CA.tar.gz" caddy && install -m 0755 caddy /usr/local/bin/caddy
 setcap cap_net_bind_service=+ep /usr/local/bin/caddy
 
@@ -33,7 +33,7 @@ sed -e "s#^ALLOWED_ORIGINS=.*#ALLOWED_ORIGINS=https://localhost#" \
 printf "DATABASE_URL='postgresql://shadowtrace_migrator:%s@db.rehearsal.internal:5432/shadowtrace?sslmode=verify-full&sslrootcert=/etc/shadowtrace/rds-ca.pem'\nDB_AUTO_MIGRATE=0\n" "$MIG_PW" > /etc/shadowtrace/migrate.env
 chown root:shadowtrace /etc/shadowtrace/shadowtrace.env; chmod 0640 /etc/shadowtrace/shadowtrace.env; chmod 0600 /etc/shadowtrace/migrate.env
 sed "s/^interview.example.org {/localhost {/" "$DEP/caddy/Caddyfile" > /etc/caddy/Caddyfile
-grep -q "^localhost {" /etc/caddy/Caddyfile && pass "Caddyfile from deploy/caddy with hostname localhost (Caddy internal CA)"
+grep -q "^localhost {" /etc/caddy/Caddyfile && pass "Caddyfile from deploy/caddy with hostname localhost (Caddy internal CA)" || fail "Caddyfile from deploy/caddy with hostname localhost (Caddy internal CA)"
 
 # systemd stand-in: start the service exactly as the unit's ExecStart does.
 UNIT_EXEC=$(sed -n '/^ExecStart=/,/[^\\]$/p' "$DEP/systemd/shadowtrace.service" | tr -d '\\\n' | sed 's/^ExecStart=//; s/  */ /g')
@@ -52,7 +52,7 @@ esac
 EOF
 chmod +x /usr/local/bin/systemctl
 echo "unit ExecStart: $UNIT_EXEC"
-echo "$UNIT_EXEC" | grep -q -- "--workers 1" && echo "$UNIT_EXEC" | grep -q -- "--host 127.0.0.1" && pass "unit runs ONE worker bound to loopback"
+echo "$UNIT_EXEC" | grep -q -- "--workers 1" && echo "$UNIT_EXEC" | grep -q -- "--host 127.0.0.1" && pass "unit runs ONE worker bound to loopback" || fail "unit runs ONE worker bound to loopback"
 
 echo "== install release A with the real install_release.sh"
 bash "$DEP/scripts/install_release.sh" "$TARBALL"
@@ -65,21 +65,20 @@ for i in $(seq 1 20); do [ -f "$CADDY_CA" ] && break; sleep 1; done
 echo "== least privilege"
 APPDB="host=db.rehearsal.internal dbname=shadowtrace user=shadowtrace_app sslmode=verify-full sslrootcert=/etc/shadowtrace/rds-ca.pem"
 if PGPASSWORD="$APP_PW" psql "$APPDB" -qc "CREATE TABLE should_fail(i int)" 2>/dev/null; then fail "app role could create a table"; else pass "app role cannot create tables"; fi
-PGPASSWORD="$APP_PW" psql "$APPDB" -tAc "SELECT count(*) FROM session_reports" >/dev/null && pass "app role can read the index over verify-full TLS"
+PGPASSWORD="$APP_PW" psql "$APPDB" -tAc "SELECT count(*) FROM session_reports" >/dev/null && pass "app role can read the index over verify-full TLS" || fail "app role can read the index over verify-full TLS"
 PGPASSWORD="$APP_PW" psql "host=db.rehearsal.internal dbname=shadowtrace user=shadowtrace_app sslmode=disable" -tAc "select 1" >/dev/null 2>&1 && echo "note: server also accepts non-TLS (RDS: set rds.force_ssl=1 to refuse it)" || true
 VER=$(PGPASSWORD="$MIG_PW" psql "host=db.rehearsal.internal dbname=shadowtrace user=shadowtrace_migrator sslmode=verify-full sslrootcert=/etc/shadowtrace/rds-ca.pem" -tAc "select max(version) from schema_migrations")
-[ "$VER" = "1" ] && pass "schema migrated to version 1 by the migration role"
+[ "$VER" = "1" ] && pass "schema migrated to version 1 by the migration role" || fail "schema migrated to version 1 by the migration role"
 
 echo "== HTTPS / WSS through Caddy"
 CURL="curl -fsS --cacert $CADDY_CA"
-$CURL https://localhost/ | grep -q '<div id="root"' && pass "HTTPS serves the built client"
-$CURL https://localhost/assets/ -o /dev/null -w '' 2>/dev/null || true
+$CURL https://localhost/ | grep -q '<div id="root"' && pass "HTTPS serves the built client" || fail "HTTPS serves the built client"
 READY=$($CURL https://localhost/ready)
-echo "$READY" | grep -q '"ready":true' && echo "$READY" | grep -q '"report_store_backend":"postgres"' && pass "/ready over HTTPS: ready, PostgreSQL backend, schema ready"
-code=$(curl -s -o /dev/null -w '%{http_code}' --cacert "$CADDY_CA" https://localhost/api/diagnostics); [ "$code" = 404 ] && pass "/api/diagnostics not exposed publicly ($code)"
-ss -ltnH | awk '{print $4}' | grep -qx "127.0.0.1:8000" && ! ss -ltnH | awk '{print $4}' | grep -qE "^(0\.0\.0\.0|\*|\[::\]):8000$" && pass "FastAPI listens on 127.0.0.1:8000 only"
+echo "$READY" | grep -q '"ready":true' && echo "$READY" | grep -q '"report_store_backend":"postgres"' && pass "/ready over HTTPS: ready, PostgreSQL backend, schema ready" || fail "/ready over HTTPS: ready, PostgreSQL backend, schema ready"
+code=$(curl -s -o /dev/null -w '%{http_code}' --cacert "$CADDY_CA" https://localhost/api/diagnostics); [ "$code" = 404 ] && pass "/api/diagnostics not exposed publicly ($code)" || fail "/api/diagnostics not exposed publicly ($code)"
+ss -ltnH | awk '{print $4}' | grep -qx "127.0.0.1:8000" && ! ss -ltnH | awk '{print $4}' | grep -qE "^(0\.0\.0\.0|\*|\[::\]):8000$" && pass "FastAPI listens on 127.0.0.1:8000 only" || fail "FastAPI listens on 127.0.0.1:8000 only"
 TOKEN=$($CURL -X POST https://localhost/api/guest | python3.12 -c 'import json,sys;print(json.load(sys.stdin)["token"])')
-$CURL -H "Authorization: Bearer $TOKEN" https://localhost/api/history | grep -q '"sessions": *\[\]' && pass "guest + history over HTTPS (index read from PostgreSQL)"
+$CURL -H "Authorization: Bearer $TOKEN" https://localhost/api/history | grep -q '"sessions": *\[\]' && pass "guest + history over HTTPS (index read from PostgreSQL)" || fail "guest + history over HTTPS (index read from PostgreSQL)"
 /srv/shadowtrace/current/.venv/bin/python - "$CADDY_CA" <<'PY'
 import asyncio, json, ssl, sys, websockets
 async def main():
@@ -110,20 +109,20 @@ PY'
 echo "== restart persistence"
 systemctl restart shadowtrace
 for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8000/ready >/dev/null 2>&1 && break; sleep 1; done
-$CURL -H "Authorization: Bearer $TOKEN" https://localhost/api/me | grep -q candidate_id && pass "guest identity survives a service restart (files on the data volume)"
+$CURL -H "Authorization: Bearer $TOKEN" https://localhost/api/me | grep -q candidate_id && pass "guest identity survives a service restart (files on the data volume)" || fail "guest identity survives a service restart (files on the data volume)"
 
 echo "== maintenance"
 bash "$DEP/scripts/maintenance.sh" on >/dev/null
-code=$(curl -s -o /dev/null -w '%{http_code}' --cacert "$CADDY_CA" -X POST https://localhost/api/guest); [ "$code" = 503 ] && pass "maintenance on: new guests refused ($code)"
-bash "$DEP/scripts/maintenance.sh" drain >/dev/null && pass "drain returns when no live sessions or evaluation jobs remain"
+code=$(curl -s -o /dev/null -w '%{http_code}' --cacert "$CADDY_CA" -X POST https://localhost/api/guest); [ "$code" = 503 ] && pass "maintenance on: new guests refused ($code)" || fail "maintenance on: new guests refused ($code)"
+bash "$DEP/scripts/maintenance.sh" drain >/dev/null && pass "drain returns when no live sessions or evaluation jobs remain" || fail "drain returns when no live sessions or evaluation jobs remain"
 bash "$DEP/scripts/maintenance.sh" off >/dev/null
-code=$(curl -s -o /dev/null -w '%{http_code}' --cacert "$CADDY_CA" -X POST https://localhost/api/guest); [ "$code" = 200 ] && pass "maintenance off: guests accepted ($code)"
+code=$(curl -s -o /dev/null -w '%{http_code}' --cacert "$CADDY_CA" -X POST https://localhost/api/guest); [ "$code" = 200 ] && pass "maintenance off: guests accepted ($code)" || fail "maintenance off: guests accepted ($code)"
 
 echo "== coordinated backup (real backup.sh) and archive verification"
 bash /srv/shadowtrace/current/deploy/scripts/backup.sh >/tmp/backup.out 2>&1 || { cat /tmp/backup.out; fail "backup.sh"; }
 ARCHIVE=$(ls -1t /var/lib/shadowtrace/backups/shadowtrace-*.tar.gz | head -1)
-/srv/shadowtrace/current/.venv/bin/python /srv/shadowtrace/current/tools/ops/restore.py "$ARCHIVE" --verify-only | grep -q '"postgres_snapshot": true' && pass "backup archive verifies and contains the PostgreSQL snapshot"
-[ ! -e /var/lib/shadowtrace/data/OPERATOR_STOP ] && pass "backup resumed service after quiesce"
+/srv/shadowtrace/current/.venv/bin/python /srv/shadowtrace/current/tools/ops/restore.py "$ARCHIVE" --verify-only | grep -q '"postgres_snapshot": true' && pass "backup archive verifies and contains the PostgreSQL snapshot" || fail "backup archive verifies and contains the PostgreSQL snapshot"
+[ ! -e /var/lib/shadowtrace/data/OPERATOR_STOP ] && pass "backup resumed service after quiesce" || fail "backup resumed service after quiesce"
 
 echo "== release B, rollback.sh, then automatic rollback of a broken release C"
 mk_release() {  # $1 suffix, $2 optional python line to append to server.py
@@ -134,11 +133,11 @@ mk_release() {  # $1 suffix, $2 optional python line to append to server.py
 }
 mk_release b
 bash "$DEP/scripts/install_release.sh" "/tmp/$NAME-b.tar.gz" >/dev/null
-[ "$(readlink -f /srv/shadowtrace/current)" = "/srv/shadowtrace/releases/${NAME#shadowtrace-}-b" ] && pass "release B installed and live"
-bash "$DEP/scripts/rollback.sh" >/dev/null && [ "$(readlink -f /srv/shadowtrace/current)" = "$REL_A" ] && pass "rollback.sh returned to release A and it is ready"
+[ "$(readlink -f /srv/shadowtrace/current)" = "/srv/shadowtrace/releases/${NAME#shadowtrace-}-b" ] && pass "release B installed and live" || fail "release B installed and live"
+bash "$DEP/scripts/rollback.sh" >/dev/null && [ "$(readlink -f /srv/shadowtrace/current)" = "$REL_A" ] && pass "rollback.sh returned to release A and it is ready" || fail "rollback.sh returned to release A and it is ready"
 mk_release c 'raise SystemExit("deliberately broken release for the rehearsal")'
 if bash "$DEP/scripts/install_release.sh" "/tmp/$NAME-c.tar.gz" >/tmp/c.out 2>&1; then fail "broken release C was accepted"; fi
-grep -q "rolling back" /tmp/c.out && [ "$(readlink -f /srv/shadowtrace/current)" = "$REL_A" ] && pass "broken release C failed readiness and was rolled back automatically"
+grep -q "rolling back" /tmp/c.out && [ "$(readlink -f /srv/shadowtrace/current)" = "$REL_A" ] && pass "broken release C failed readiness and was rolled back automatically" || fail "broken release C failed readiness and was rolled back automatically"
 for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8000/ready >/dev/null 2>&1 && break; sleep 1; done
-$CURL https://localhost/ready | grep -q '"ready":true' && pass "service ready on release A after the failed install"
+$CURL https://localhost/ready | grep -q '"ready":true' && pass "service ready on release A after the failed install" || fail "service ready on release A after the failed install"
 echo "ALL REHEARSAL CHECKS PASSED"
