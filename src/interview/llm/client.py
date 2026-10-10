@@ -138,6 +138,9 @@ class CallMeta:
     backoff_s: float = 0.0
     total_s: float = 0.0
     finish_reason: str | None = None
+    # How structured output was requested from the model that answered:
+    # "json_schema_strict", "json_object" or None (free text).
+    output_mode: str | None = None
     usage: dict[str, Any] = field(default_factory=dict)
     error_category: str | None = None
     status_codes: list[int] = field(default_factory=list)
@@ -155,6 +158,7 @@ class CallMeta:
             "backoff_s": round(self.backoff_s, 3),
             "total_s": round(self.total_s, 3),
             "finish_reason": self.finish_reason,
+            "output_mode": self.output_mode,
             "usage": dict(self.usage),
             "error_category": self.error_category,
             "status_codes": list(self.status_codes),
@@ -274,6 +278,7 @@ class GroqModelClient:
             # follows ALLOW_MOCK_PROVIDERS. In production a failed provider
             # surfaces as an error, never as canned text.
             self._failover_to_mock = bool(settings.mocks_allowed)
+            self._strict_schema_models = frozenset(settings.eval_strict_schema_models)
         else:
             self._base_url = groq.get("base_url", GROQ_BASE_URL)
             self._roles = dict(groq.get("roles") or {})
@@ -284,6 +289,7 @@ class GroqModelClient:
             self._max_per_turn = int(groq.get("max_calls_per_turn", 3))
             rpm = int(groq.get("requests_per_minute", 30))
             self._failover_to_mock = bool(groq.get("failover_to_mock", False))
+            self._strict_schema_models = frozenset(groq.get("strict_schema_models") or ())
         self._limiter = get_shared_limiter(rpm)
         self._budget = TurnCallBudget(self._max_per_turn)
         self._bus = bus
@@ -317,6 +323,36 @@ class GroqModelClient:
         if not fallback or fallback == self._roles.get(role):
             return None
         return fallback
+
+    def supports_strict_schema(self, model: str) -> bool:
+        """Configured (EVAL_STRICT_SCHEMA_MODELS), never inferred from the name."""
+        return model in self._strict_schema_models
+
+    def response_format_for(
+        self, model: str, *, json_object: bool, json_schema: dict[str, Any] | None
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        """
+        (response_format, output_mode) for one model.
+
+        Decided per model, because the fallback hop may land on a model that
+        does not accept a strict schema; that model still gets JSON-object mode.
+        """
+        if json_schema is not None and self.supports_strict_schema(model):
+            return (
+                {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": json_schema["name"],
+                        "schema": json_schema["schema"],
+                        "strict": True,
+                    },
+                },
+                "json_schema_strict",
+            )
+        if json_object or json_schema is not None:
+            # Server-side JSON mode. Without it these models prepend prose.
+            return {"type": "json_object"}, "json_object"
+        return None, None
 
     def timeout_for(self, role: str) -> float:
         return self._eval_timeout_s if role in ("evaluator", "roadmap") else self._timeout_s
@@ -370,6 +406,7 @@ class GroqModelClient:
         max_tokens: int | None = None,
         temperature: float | None = None,
         json_object: bool = False,
+        json_schema: dict[str, Any] | None = None,
         deadline_s: float | None = None,
         timeout_s: float | None = None,
     ) -> dict[str, Any]:
@@ -377,6 +414,10 @@ class GroqModelClient:
         Non-streaming chat. Returns {"content", "tool_calls", "finish_reason",
         "meta"}; raises `ProviderCallFailed` (with `.meta`) when the bounded
         budget is spent.
+
+        `json_schema` ({"name", "schema"}) asks for strict schema output on
+        models listed in EVAL_STRICT_SCHEMA_MODELS and JSON-object mode on any
+        other model; `json_object` alone asks for JSON-object mode.
         """
         model = self.model_for(role)
         call_index, turn_call_index = await self._budget.begin_call(turn_id)
@@ -391,9 +432,7 @@ class GroqModelClient:
         if tools:
             request["tools"] = tools
             request["tool_choice"] = "auto"
-        if json_object:
-            # Server-side JSON mode. Without it these models prepend prose.
-            request["response_format"] = {"type": "json_object"}
+        output = {"json_object": json_object, "json_schema": json_schema}
         per_request = timeout_s or self.timeout_for(role)
         ok = False
         error = ""
@@ -405,7 +444,9 @@ class GroqModelClient:
             if deadline_s:
                 deadline = time.monotonic() + deadline_s
             try:
-                result = await self._attempts(model, request, meta, deadline, per_request)
+                result = await self._attempts(
+                    model, request, meta, deadline, per_request, **output
+                )
             except ProviderCallFailed as exc:
                 fallback = self.failover_model_for(role)
                 if (
@@ -420,7 +461,9 @@ class GroqModelClient:
                     turn_id,
                 )
                 meta.fallback_used = True
-                result = await self._attempts(fallback, request, meta, deadline, per_request)
+                result = await self._attempts(
+                    fallback, request, meta, deadline, per_request, **output
+                )
             ok = True
             meta.total_s = time.monotonic() - started
             result["meta"] = meta.as_dict()
@@ -451,9 +494,18 @@ class GroqModelClient:
         meta: CallMeta,
         deadline: float | None,
         per_request_timeout: float,
+        *,
+        json_object: bool = False,
+        json_schema: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Up to 1 + max_retries attempts on one model, inside the deadline."""
         client = self._openai()
+        response_format, output_mode = self.response_format_for(
+            model, json_object=json_object, json_schema=json_schema
+        )
+        if response_format is not None:
+            request = {**request, "response_format": response_format}
+        meta.output_mode = output_mode
         delay = _BACKOFF_START_S
         last: BaseException | None = None
         category = "unknown"
