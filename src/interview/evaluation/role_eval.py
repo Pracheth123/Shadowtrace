@@ -53,6 +53,7 @@ Stage 16 (report.v3, additive over v2):
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import re
@@ -476,12 +477,21 @@ class GroqEvaluator:
         self._max_tokens = max_tokens
 
     async def complete_with_meta(
-        self, messages: list[dict[str, str]], *, deadline_s: float | None = None
+        self,
+        messages: list[dict[str, str]],
+        *,
+        deadline_s: float | None = None,
+        json_schema: dict[str, Any] | None = None,
     ) -> tuple[str, dict[str, Any]]:
         """
         One logical evaluator call. Retries, back-off and the fallback hop all
         happen inside the client and inside `deadline_s`; nothing here retries.
         Raises the client's `ProviderCallFailed` (with `.category`, `.meta`).
+
+        JSON-object mode is always requested. With `json_schema`, a model listed
+        in EVAL_STRICT_SCHEMA_MODELS gets strict schema output instead; the
+        client decides per model, so a fallback outside the list still gets
+        JSON-object mode rather than an unsupported request.
         """
         reply = await self._client.chat(
             "evaluator",
@@ -489,6 +499,7 @@ class GroqEvaluator:
             max_tokens=self._max_tokens,
             temperature=0.2,
             json_object=True,
+            json_schema=json_schema,
             deadline_s=deadline_s,
         )
         meta = dict(reply.get("meta") or {})
@@ -518,7 +529,11 @@ class MockEvaluator:
     fallback_model = None
 
     async def complete_with_meta(
-        self, messages: list[dict[str, str]], *, deadline_s: float | None = None
+        self,
+        messages: list[dict[str, str]],
+        *,
+        deadline_s: float | None = None,
+        json_schema: dict[str, Any] | None = None,
     ) -> tuple[str, dict[str, Any]]:
         text = await self.complete(messages)
         return text, {
@@ -704,18 +719,157 @@ def build_messages(
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
-def parse_output(text: str, *, rubric_ids: list[str], claim_ids: list[str]) -> RoundEvalOutput:
-    """Validate the evaluator's reply. Raises ValueError with a usable message."""
+def report_json_schema(rubric_ids: list[str], claim_ids: list[str]) -> dict[str, Any]:
+    """
+    The output contract as a strict JSON schema ({"name", "schema"}).
+
+    Strict mode needs every property required and no additional properties,
+    so optional fields are required here and may be empty strings or lists.
+    It constrains shape only: quotes, claim ids and dimension coverage are
+    still checked by `parse_output` and the evidence checks after it.
+    """
+
+    def obj(props: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": props,
+            "required": list(props),
+            "additionalProperties": False,
+        }
+
+    text = {"type": "string"}
+    dimension_id = {"type": "string", "enum": list(rubric_ids)} if rubric_ids else text
+    claim_id = {"type": "string", "enum": list(claim_ids)} if claim_ids else text
+    schema = obj(
+        {
+            "dimensions": {
+                "type": "array",
+                "items": obj(
+                    {
+                        "dimension_id": dimension_id,
+                        "level": {"type": "string", "enum": [lvl.value for lvl in Level]},
+                        "rationale": text,
+                        "citations": {
+                            "type": "array",
+                            "items": obj({"turn_id": text, "quote": text}),
+                        },
+                    }
+                ),
+            },
+            "findings": {
+                "type": "array",
+                "items": obj(
+                    {
+                        "dimension_id": dimension_id,
+                        "polarity": {"type": "string", "enum": ["strength", "gap"]},
+                        "explanation": text,
+                        "quote": text,
+                        "turn_id": text,
+                        "confidence": {"type": "string", "enum": ["high", "moderate", "low"]},
+                        "practice": text,
+                    }
+                ),
+            },
+            "claims": {
+                "type": "array",
+                "items": obj(
+                    {
+                        "claim_id": claim_id,
+                        "status": {"type": "string", "enum": ["held", "collapsed", "untested"]},
+                        "reason": text,
+                        "quote": text,
+                        "turn_id": text,
+                    }
+                ),
+            },
+        }
+    )
+    return {"name": "round_evaluation", "schema": schema}
+
+
+class ReplyRejected(ValueError):
+    """
+    An evaluator reply that cannot be used, with a category safe to log.
+
+    The message names what was wrong and where, never the reply's content,
+    so it can go into logs, job metadata and the repair prompt.
+    """
+
+    def __init__(self, kind: str, message: str) -> None:
+        super().__init__(message)
+        self.kind = kind
+
+
+# One whole-reply Markdown fence: ```json\n{...}\n``` (language tag optional).
+_FENCE = re.compile(r"\A```[ \t]*(?:json)?[ \t]*\r?\n(?P<body>.*?)\r?\n?[ \t]*```\Z", re.S | re.I)
+
+
+def extract_report_object(text: str) -> dict[str, Any]:
+    """
+    Exactly one JSON object, optionally wrapped in one Markdown code fence.
+
+    Anything else is rejected rather than guessed at: leading prose, a second
+    object, or trailing text. Taking the first object (or the span from the
+    first "{" to the last "}") would silently pick one of several reports, or
+    fuse two into an "Extra data" error that a repair cannot explain.
+    """
     raw = (text or "").strip()
     if not raw:
-        raise ValueError("empty reply")
-    start, end = raw.find("{"), raw.rfind("}")
-    if start == -1 or end <= start:
-        raise ValueError("no JSON object in reply")
+        raise ReplyRejected("empty", "empty reply")
+    if raw.startswith("```"):
+        fenced = _FENCE.match(raw)
+        if fenced is None:
+            raise ReplyRejected(
+                "trailing_content",
+                "the reply opens a code fence but is not exactly one fenced JSON "
+                "object (unclosed fence, or text outside the fence)",
+            )
+        raw = fenced.group("body").strip()
+    if not raw.startswith("{"):
+        if raw.startswith("["):
+            raise ReplyRejected("not_object", "the reply is a JSON array, not one JSON object")
+        raise ReplyRejected(
+            "leading_content",
+            "the reply must start with '{'; it began with text before the JSON object",
+        )
     try:
-        data = json.loads(raw[start : end + 1])
+        data, end = json.JSONDecoder().raw_decode(raw)
     except json.JSONDecodeError as exc:
-        raise ValueError(f"invalid JSON: {exc}") from exc
+        # exc.msg and position only: never the document itself.
+        raise ReplyRejected(
+            "invalid_json", f"invalid JSON: {exc.msg} at line {exc.lineno} column {exc.colno}"
+        ) from None
+    rest = raw[end:].strip()
+    if rest:
+        if rest[0] in "{[":
+            raise ReplyRejected(
+                "multiple_objects",
+                f"the reply contains more than one JSON value (a second one starts at "
+                f"character {end + (len(raw[end:]) - len(raw[end:].lstrip()))}); "
+                "send exactly one report object",
+            )
+        raise ReplyRejected(
+            "trailing_content",
+            f"the reply has {len(rest)} characters of text after the JSON object",
+        )
+    if not isinstance(data, dict):
+        raise ReplyRejected("not_object", "the reply is not a JSON object")
+    return data
+
+
+def _schema_errors(exc: ValidationError) -> str:
+    """Where and what, without the offending values (they may quote the transcript)."""
+    parts = []
+    for err in exc.errors()[:3]:
+        where = ".".join(str(p) for p in err.get("loc", ())) or "(root)"
+        parts.append(f"{where}: {err.get('msg', 'invalid')}")
+    more = len(exc.errors()) - len(parts)
+    return "; ".join(parts) + (f"; and {more} more" if more > 0 else "")
+
+
+def parse_output(text: str, *, rubric_ids: list[str], claim_ids: list[str]) -> RoundEvalOutput:
+    """Validate the evaluator's reply. Raises `ReplyRejected` (a ValueError)."""
+    data = extract_report_object(text)
     # A finding with no quote, explanation or turn cannot be shown, but it is
     # no reason to discard valid dimension levels in the same reply (measured
     # on 2026-10-06: a whole reply was rejected over three empty-quote
@@ -739,17 +893,22 @@ def parse_output(text: str, *, rubric_ids: list[str], claim_ids: list[str]) -> R
         out = RoundEvalOutput.model_validate(data)
         out.dropped_findings = dropped
     except ValidationError as exc:
-        raise ValueError(f"reply does not match the schema: {exc.errors()[:3]}") from exc
+        raise ReplyRejected(
+            "schema", f"reply does not match the schema: {_schema_errors(exc)}"
+        ) from None
     got = [d.dimension_id for d in out.dimensions]
     unknown = sorted(set(got) - set(rubric_ids))
     missing = sorted(set(rubric_ids) - set(got))
-    if unknown or missing:
-        raise ValueError(
-            f"dimensions must be exactly {rubric_ids}; unknown={unknown} missing={missing}"
+    duplicated = sorted({d for d in got if got.count(d) > 1})
+    if unknown or missing or duplicated:
+        raise ReplyRejected(
+            "rubric",
+            f"dimensions must be exactly {rubric_ids}, each once; unknown={unknown} "
+            f"missing={missing} duplicated={duplicated}",
         )
     bad_claims = sorted({c.claim_id for c in out.claims} - set(claim_ids))
     if bad_claims:
-        raise ValueError(f"unknown claim ids {bad_claims}; allowed {claim_ids}")
+        raise ReplyRejected("claims", f"unknown claim ids {bad_claims}; allowed {claim_ids}")
     return out
 
 
@@ -839,12 +998,27 @@ def _limitation(
     return " ".join(parts)
 
 
+def _accepts_schema(fn) -> bool:
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    return "json_schema" in params or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
+
+
 async def _call_evaluator(
-    evaluator: EvaluatorModel, messages: list[dict[str, str]], deadline_s: float | None
+    evaluator: EvaluatorModel,
+    messages: list[dict[str, str]],
+    deadline_s: float | None,
+    json_schema: dict[str, Any] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """One logical call, through `complete_with_meta` when the backend has it."""
     with_meta = getattr(evaluator, "complete_with_meta", None)
     if with_meta is not None:
+        if json_schema is not None and _accepts_schema(with_meta):
+            return await with_meta(messages, deadline_s=deadline_s, json_schema=json_schema)
         return await with_meta(messages, deadline_s=deadline_s)
     started = time.monotonic()
     if deadline_s is not None:
@@ -971,6 +1145,7 @@ async def evaluate_round(
     )
     rubric_ids = rubric.dimension_ids()
     claim_ids = [c.id for c in claims]
+    schema = report_json_schema(rubric_ids, claim_ids)
     started = time.monotonic()
     deadline = started + deadline_s if deadline_s else None
     last_error = ""
@@ -978,17 +1153,20 @@ async def evaluate_round(
     output: RoundEvalOutput | None = None
     calls: list[dict[str, Any]] = []
     replies = 0
-    for replies in range(1, max_repairs + 2):
+    max_replies = max_repairs + 1
+    for replies in range(1, max_replies + 1):
         remaining = None if deadline is None else deadline - time.monotonic()
         if remaining is not None and remaining <= 0.5:
             category = "deadline"
             last_error = last_error or "round deadline reached"
             replies -= 1
             break
+        attempt_started = time.monotonic()
         try:
-            reply, meta = await _call_evaluator(evaluator, messages, remaining)
+            reply, meta = await _call_evaluator(evaluator, messages, remaining, schema)
         except asyncio.TimeoutError:
             calls.append({"error_category": "timeout"})
+            _log_reply(perspective, replies, max_replies, {}, None, "timeout", attempt_started)
             raise EvaluationPassFailed(
                 f"The {PERSPECTIVE_LABEL[perspective]} evaluation timed out.",
                 category="timeout",
@@ -998,38 +1176,38 @@ async def evaluate_round(
         except Exception as exc:  # noqa: BLE001 — classified, not retried here
             meta = getattr(exc, "meta", None)
             meta_dict = meta.as_dict() if hasattr(meta, "as_dict") else {}
-            calls.append({**meta_dict, "error_category": getattr(exc, "category", "unknown")})
+            error_category = str(getattr(exc, "category", "unknown"))
+            calls.append({**meta_dict, "error_category": error_category})
+            _log_reply(perspective, replies, max_replies, meta_dict, None, error_category, attempt_started)
             raise EvaluationPassFailed(
                 f"The {PERSPECTIVE_LABEL[perspective]} evaluation could not reach the "
-                f"model ({getattr(exc, 'category', 'unknown')}): {str(exc)[:200]}",
-                category=str(getattr(exc, "category", "unknown")),
+                f"model ({error_category}): {str(exc)[:200]}",
+                category=error_category,
                 attempts=replies,
                 calls=calls,
             ) from exc
+        meta = {**meta, "reply_chars": len(reply or ""), "attempt_s": round(time.monotonic() - attempt_started, 3)}
         calls.append(meta)
+        # A reply cut off at the length limit is never parsed, even if a
+        # prefix happens to be valid JSON: the report would be missing parts.
         truncated = meta.get("finish_reason") == "length"
         try:
             if truncated:
-                raise ValueError(
-                    "the reply was cut off at the token limit; keep rationales under "
-                    "20 words and give at most 4 findings"
+                raise ReplyRejected(
+                    "truncated",
+                    "the reply was cut off at the output token limit before the report "
+                    "was complete",
                 )
             output = parse_output(reply, rubric_ids=rubric_ids, claim_ids=claim_ids)
+            meta["error_category"] = None
+            _log_reply(perspective, replies, max_replies, meta, len(reply or ""), "ok", attempt_started)
             break
-        except ValueError as exc:
+        except ReplyRejected as exc:
             last_error = str(exc)
             category = "truncated" if truncated else "invalid_output"
-            log.warning("%s evaluation reply %d rejected: %s", perspective, replies, last_error)
-            messages = messages[:2] + [
-                {"role": "assistant", "content": reply[:4000]},
-                {
-                    "role": "user",
-                    "content": (
-                        f"Your reply was rejected: {last_error}. Reply again with "
-                        "only the JSON object in the required shape."
-                    ),
-                },
-            ]
+            meta["error_category"] = exc.kind
+            _log_reply(perspective, replies, max_replies, meta, len(reply or ""), exc.kind, attempt_started)
+            messages = messages[:2] + _repair_turns(reply, exc)
     if output is None:
         raise EvaluationPassFailed(
             f"The {PERSPECTIVE_LABEL[perspective]} evaluation could not produce a "
@@ -1166,6 +1344,9 @@ async def evaluate_round(
         "limiter_wait_s": round(sum(float(c.get("limiter_wait_s") or 0) for c in calls), 3),
         "request_s": round(sum(float(c.get("request_s") or 0) for c in calls), 3),
         "usage": _sum_usage(calls),
+        "output_mode": calls[-1].get("output_mode") if calls else None,
+        "reply_outcomes": [c.get("error_category") or "ok" for c in calls],
+        "finish_reasons": [c.get("finish_reason") for c in calls],
         "elapsed_s": round(time.monotonic() - started, 3),
         "prompt_version": PROMPT_VERSION,
     }
@@ -1189,6 +1370,72 @@ async def evaluate_round(
             evaluation_meta=evaluation_meta,
         ),
         positions,
+    )
+
+
+def _repair_turns(reply: str, exc: ReplyRejected) -> list[dict[str, str]]:
+    """
+    The one repair request: what was wrong, and a request for exactly one
+    corrected report. It never offers a way to pass by inventing evidence.
+    """
+    if exc.kind == "truncated":
+        # The partial reply is not worth sending back; ask for a shorter one.
+        return [
+            {
+                "role": "user",
+                "content": (
+                    "Your previous reply was cut off at the output length limit, so it "
+                    "was not used. Send exactly one complete report as a single JSON "
+                    "object in the required shape and nothing else: rationales under "
+                    "20 words, at most 4 findings, citations only where the answer "
+                    "supports them."
+                ),
+            }
+        ]
+    return [
+        {"role": "assistant", "content": reply[:6000]},
+        {
+            "role": "user",
+            "content": (
+                f"Your previous reply was rejected: {exc}. Send exactly one corrected "
+                "report: a single JSON object in the required shape, with no text, "
+                "code fence or second JSON object before or after it. Quote only words "
+                "that appear in a candidate turn; where the answers do not support a "
+                "dimension, use insufficient_evidence with no citations rather than "
+                "inventing evidence."
+            ),
+        },
+    ]
+
+
+def _log_reply(
+    perspective: str,
+    reply_no: int,
+    max_replies: int,
+    meta: dict[str, Any],
+    reply_chars: int | None,
+    outcome: str,
+    attempt_started: float,
+) -> None:
+    """
+    One line per evaluator reply. Metadata only: model, finish reason, reply
+    length, outcome category and duration — never the transcript, the prompt,
+    the reply text or a credential.
+    """
+    log.log(
+        logging.INFO if outcome == "ok" else logging.WARNING,
+        "evaluation reply perspective=%s reply=%d/%d model=%s fallback=%s output_mode=%s "
+        "finish_reason=%s reply_chars=%s outcome=%s attempt_s=%.2f",
+        perspective,
+        reply_no,
+        max_replies,
+        meta.get("model_used") or meta.get("model_requested") or "",
+        bool(meta.get("fallback_used")),
+        meta.get("output_mode"),
+        meta.get("finish_reason"),
+        reply_chars,
+        outcome,
+        time.monotonic() - attempt_started,
     )
 
 
@@ -1740,6 +1987,7 @@ __all__ = [
     "PROMPT_VERSION",
     "PassResult",
     "REPORT_SCHEMA",
+    "ReplyRejected",
     "RoundEvalOutput",
     "RoundJob",
     "SessionInputs",
@@ -1748,10 +1996,12 @@ __all__ = [
     "build_messages",
     "evaluate_round",
     "evaluate_session",
+    "extract_report_object",
     "load_transcript",
     "parse_output",
     "plan_rounds",
     "prioritise",
     "quote_matches",
+    "report_json_schema",
     "run_round_job",
 ]
