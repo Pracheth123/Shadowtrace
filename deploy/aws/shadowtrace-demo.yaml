@@ -275,7 +275,7 @@ Resources:
           # Host bootstrap only. The application release is installed afterwards
           # with deploy/scripts/install_release.sh (docs/DEPLOYMENT.md).
           set -euo pipefail
-          dnf -y install python3.11 python3.11-pip tar gzip xfsprogs postgresql16 logrotate
+          dnf -y install python3.12 python3.12-pip tar gzip xfsprogs postgresql16 logrotate
           id shadowtrace >/dev/null 2>&1 || useradd --system --home-dir /srv/shadowtrace --shell /sbin/nologin shadowtrace
           mkdir -p /srv/shadowtrace/releases /etc/shadowtrace /var/lib/shadowtrace /var/log/caddy
           # Encrypted data volume -> /var/lib/shadowtrace (DATA_DIR, logs, ledger, backups).

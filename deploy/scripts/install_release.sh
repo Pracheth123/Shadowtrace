@@ -15,7 +15,7 @@ TARBALL=${1:?usage: install_release.sh <tarball> [--maintenance]}
 MAINT=${2:-}
 ROOT=/srv/shadowtrace
 DATA_DIR=/var/lib/shadowtrace/data
-PY=${PYTHON:-python3.11}
+PY=${PYTHON:-python3.12}  # requirements-lock.txt needs Python >= 3.12 (numpy 2.5.x)
 
 [ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 1; }
 if [ -f "$TARBALL.sha256" ]; then (cd "$(dirname "$TARBALL")" && sha256sum -c "$(basename "$TARBALL").sha256"); fi

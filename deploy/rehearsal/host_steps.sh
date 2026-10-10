@@ -7,7 +7,7 @@ pass() { echo "PASS  $*"; }
 fail() { echo "FAIL  $*"; exit 1; }
 
 echo "== host bootstrap (as UserData would)"
-dnf -y -q install python3.11 python3.11-pip tar gzip shadow-utils procps-ng iproute postgresql16 libcap openssl findutils >/dev/null
+dnf -y -q install python3.12 python3.12-pip tar gzip shadow-utils procps-ng iproute postgresql16 libcap openssl findutils >/dev/null
 useradd --system --home-dir /srv/shadowtrace --shell /sbin/nologin shadowtrace
 useradd --system --home-dir /var/lib/caddy --create-home --shell /sbin/nologin caddy
 mkdir -p /srv/shadowtrace/releases /etc/shadowtrace /etc/caddy /var/log/caddy /var/lib/shadowtrace/{data,logs,ledger,backups,legacy-reports,legacy-intake}
@@ -77,7 +77,7 @@ READY=$($CURL https://localhost/ready)
 echo "$READY" | grep -q '"ready":true' && echo "$READY" | grep -q '"report_store_backend":"postgres"' && pass "/ready over HTTPS: ready, PostgreSQL backend, schema ready"
 code=$(curl -s -o /dev/null -w '%{http_code}' --cacert "$CADDY_CA" https://localhost/api/diagnostics); [ "$code" = 404 ] && pass "/api/diagnostics not exposed publicly ($code)"
 ss -ltnH | awk '{print $4}' | grep -qx "127.0.0.1:8000" && ! ss -ltnH | awk '{print $4}' | grep -qE "^(0\.0\.0\.0|\*|\[::\]):8000$" && pass "FastAPI listens on 127.0.0.1:8000 only"
-TOKEN=$($CURL -X POST https://localhost/api/guest | python3.11 -c 'import json,sys;print(json.load(sys.stdin)["token"])')
+TOKEN=$($CURL -X POST https://localhost/api/guest | python3.12 -c 'import json,sys;print(json.load(sys.stdin)["token"])')
 $CURL -H "Authorization: Bearer $TOKEN" https://localhost/api/history | grep -q '"sessions": *\[\]' && pass "guest + history over HTTPS (index read from PostgreSQL)"
 /srv/shadowtrace/current/.venv/bin/python - "$CADDY_CA" <<'PY'
 import asyncio, json, ssl, sys, websockets

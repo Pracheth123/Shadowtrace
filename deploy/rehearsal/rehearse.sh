@@ -6,7 +6,7 @@
 # Stands up, on a private Docker network:
 #   - "db.rehearsal.internal": PostgreSQL 16.4 with TLS from a throwaway CA
 #     (stands in for RDS + its CA bundle; the app connects with verify-full);
-#   - "app": Amazon Linux 2023 with python3.11, the pinned Caddy binary
+#   - "app": Amazon Linux 2023 with python3.12, the pinned Caddy binary
 #     (checksum verified), and the release installed by the REAL
 #     deploy/scripts/install_release.sh, rollback.sh, maintenance.sh and backup.sh.
 # systemd does not run in a container, so a small `systemctl` shim starts the
@@ -17,27 +17,31 @@
 # outside, backup with quiesce, maintenance on/off, rollback, and automatic
 # rollback of a release that fails readiness. Writes a log under logs/rehearsal/.
 set -euo pipefail
-TARBALL=$(realpath "${1:?usage: rehearse.sh <release tarball>}")
-HERE=$(cd "$(dirname "$0")" && pwd)
-REPO=$(cd "$HERE/../.." && pwd)
-WORK=$(mktemp -d)
+export MSYS_NO_PATHCONV=1  # Git Bash on Windows: do not rewrite "/CN=..." or container paths
+# Host paths in a form native tools (openssl.exe, docker.exe) accept; no-op on Linux.
+hostpath() { cygpath -m "$1" 2>/dev/null || printf '%s' "$1"; }
+TARBALL=$(hostpath "$(realpath "${1:?usage: rehearse.sh <release tarball>}")")
+HERE=$(hostpath "$(cd "$(dirname "$0")" && pwd)")
+REPO=$(hostpath "$(cd "$HERE/../.." && pwd)")
+WORK=$(hostpath "$(mktemp -d)")
 NET=st-rehearsal
 LOG="$REPO/logs/rehearsal"; mkdir -p "$LOG"
-cleanup() { docker rm -f st-reh-db st-reh-app >/dev/null 2>&1 || true; docker network rm "$NET" >/dev/null 2>&1 || true; rm -rf "$WORK"; }
+containers_down() { docker rm -f st-reh-db st-reh-app >/dev/null 2>&1 || true; docker network rm "$NET" >/dev/null 2>&1 || true; }
+cleanup() { containers_down; rm -rf "$WORK"; }
+containers_down   # leftovers from an interrupted earlier run
 trap cleanup EXIT
-cleanup; trap cleanup EXIT
 
 rand() { openssl rand -hex 16; }
 ADMIN_PW=$(rand); APP_PW=$(rand); MIG_PW=$(rand)
 
 echo "== throwaway CA and server certificate for db.rehearsal.internal"
 openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=rehearsal-ca" \
-  -keyout "$WORK/ca.key" -out "$WORK/ca.pem" 2>/dev/null
+  -keyout "$WORK/ca.key" -out "$WORK/ca.pem" </dev/null 2>/dev/null
 openssl req -newkey rsa:2048 -nodes -subj "/CN=db.rehearsal.internal" \
-  -keyout "$WORK/server.key" -out "$WORK/server.csr" 2>/dev/null
+  -keyout "$WORK/server.key" -out "$WORK/server.csr" </dev/null 2>/dev/null
 printf "subjectAltName=DNS:db.rehearsal.internal\n" > "$WORK/san.ext"
 openssl x509 -req -in "$WORK/server.csr" -CA "$WORK/ca.pem" -CAkey "$WORK/ca.key" -CAcreateserial \
-  -days 2 -extfile "$WORK/san.ext" -out "$WORK/server.crt" 2>/dev/null
+  -days 2 -extfile "$WORK/san.ext" -out "$WORK/server.crt" </dev/null 2>/dev/null
 
 docker network create "$NET" >/dev/null
 MSYS_NO_PATHCONV=1 docker run -d --name st-reh-db --network "$NET" --network-alias db.rehearsal.internal \

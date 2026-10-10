@@ -23,7 +23,7 @@ against human review. Nothing here screens, ranks or gates anyone.
 ## Requirements
 
 - Python **3.11, 3.12 or 3.13** (64-bit). 3.14 is not yet supported by the pinned
-  dependency range.
+  dependency range. The pinned `requirements-lock.txt` (numpy 2.5.x) needs 3.12+; on 3.11 use `pip install -e .` without the lock.
 - Node.js 18+ and npm.
 - Optional, for real AI and voice: a Groq API key and a Deepgram API key.
   Without them, development mode runs a clearly labelled plan-based interviewer
