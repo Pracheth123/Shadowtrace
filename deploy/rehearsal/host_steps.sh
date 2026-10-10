@@ -3,6 +3,7 @@
 # Mirrors the stack's UserData, then exercises the real release scripts.
 set -euo pipefail
 : "${APP_PW:?}" "${MIG_PW:?}" "${TARBALL:?}"
+trap 'echo "--- last service log lines"; tail -40 /var/log/shadowtrace.log 2>/dev/null || true' ERR
 pass() { echo "PASS  $*"; }
 fail() { echo "FAIL  $*"; exit 1; }
 

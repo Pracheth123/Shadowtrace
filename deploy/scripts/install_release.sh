@@ -42,7 +42,10 @@ fi
 set -a; . /etc/shadowtrace/shadowtrace.env; . /etc/shadowtrace/migrate.env; set +a
 "$DEST/.venv/bin/python" -m interview.storage migrate
 
-PREV=$(readlink -f "$ROOT/current" || true)
+# Only an existing symlink names a previous release (readlink -f of a missing
+# path returns the path itself, which would make rollback point at itself).
+PREV=""
+[ -L "$ROOT/current" ] && PREV=$(readlink -f "$ROOT/current")
 ln -sfn "$DEST" "$ROOT/current.new" && mv -Tf "$ROOT/current.new" "$ROOT/current"
 [ -n "$PREV" ] && [ "$PREV" != "$DEST" ] && ln -sfn "$PREV" "$ROOT/previous"
 systemctl restart shadowtrace
