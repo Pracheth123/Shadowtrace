@@ -165,6 +165,25 @@ class Settings(BaseSettings):
     background_max_defer_s: float = Field(
         default=20.0, ge=0.0, le=600.0, alias="BACKGROUND_MAX_DEFER_S"
     )
+    # ------------------------------------------------------------------
+    # Report-index database (history, comparisons, recurring gaps, plan).
+    # Empty DATABASE_URL: SQLite at DATA_DIR/reports.sqlite (development).
+    # postgresql://… selects PostgreSQL. Production requires PostgreSQL with
+    # sslmode=verify-full unless ALLOW_SQLITE_IN_PRODUCTION=1 is set explicitly.
+    # Everything else the app stores stays in files under DATA_DIR.
+    # ------------------------------------------------------------------
+    database_url: SecretStr = Field(default=SecretStr(""), alias="DATABASE_URL")
+    db_pool_min_size: int = Field(default=1, ge=0, le=20, alias="DB_POOL_MIN_SIZE")
+    db_pool_max_size: int = Field(default=5, ge=1, le=50, alias="DB_POOL_MAX_SIZE")
+    db_connect_timeout_s: float = Field(default=5.0, gt=0, le=60, alias="DB_CONNECT_TIMEOUT_S")
+    db_statement_timeout_ms: int = Field(default=5000, ge=100, le=600000, alias="DB_STATEMENT_TIMEOUT_MS")
+    # Apply schema migrations on startup. Unset: on outside production.
+    db_auto_migrate: bool | None = Field(default=None, alias="DB_AUTO_MIGRATE")
+    allow_sqlite_in_production: bool = Field(default=False, alias="ALLOW_SQLITE_IN_PRODUCTION")
+    # Deletion tombstones. Keep this OUTSIDE anything a backup restore replaces
+    # (default: DATA_DIR/deletion-ledger.jsonl, for compatibility).
+    deletion_ledger_path: Path | None = Field(default=None, alias="DELETION_LEDGER_PATH")
+
     # Reverse proxies whose X-Forwarded-For is believed (IPs or CIDRs). Empty:
     # the socket peer is the client address and forwarding headers are ignored.
     trusted_proxies_raw: str = Field(default="", alias="TRUSTED_PROXIES")
@@ -243,6 +262,16 @@ class Settings(BaseSettings):
     # How many times one round may be run in total, explicit retries included.
     eval_max_round_runs: int = Field(default=4, ge=1, le=20, alias="EVAL_MAX_ROUND_RUNS")
     eval_max_tokens: int = Field(default=4000, ge=500, le=16000, alias="EVAL_MAX_TOKENS")
+    # Models that accept `response_format: json_schema` with `strict: true`.
+    # Only these get schema-constrained evaluator output; every other model
+    # (including a fallback outside this list) gets plain JSON-object mode.
+    # Default = Groq's structured-outputs page as read on 2026-10-10. Verify a
+    # deployment's key with `python tools/ops/probe_eval_output.py` (live, billed);
+    # set to an empty string to use JSON-object mode everywhere.
+    eval_strict_schema_models_raw: str = Field(
+        default="openai/gpt-oss-20b,openai/gpt-oss-120b,qwen/qwen3.8-27b",
+        alias="EVAL_STRICT_SCHEMA_MODELS",
+    )
     max_model_calls_per_turn: int = Field(
         default=3, ge=1, le=10, alias="MAX_MODEL_CALLS_PER_TURN"
     )
@@ -416,6 +445,11 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _production_is_honest(self) -> "Settings":
+        url = self.database_url.get_secret_value().strip()
+        if url and not url.startswith(("postgresql://", "postgres://")):
+            raise ValueError("DATABASE_URL must be a postgresql:// URL (or empty for local SQLite).")
+        if self.db_pool_min_size > self.db_pool_max_size:
+            raise ValueError("DB_POOL_MIN_SIZE cannot exceed DB_POOL_MAX_SIZE.")
         if self.mock_llm and not self.allow_mock_providers:
             raise ValueError(
                 "MOCK_LLM=1 asks for the deterministic interviewer and mock "
@@ -442,6 +476,23 @@ class Settings(BaseSettings):
             for origin in self.allowed_origins_raw.split(",")
             if origin.strip()
         ]
+
+    @property
+    def eval_strict_schema_models(self) -> frozenset[str]:
+        return frozenset(
+            name.strip()
+            for name in self.eval_strict_schema_models_raw.split(",")
+            if name.strip()
+        )
+
+    @property
+    def database_backend(self) -> str:
+        url = self.database_url.get_secret_value().strip()
+        return "postgres" if url.startswith(("postgresql://", "postgres://")) else "sqlite"
+
+    @property
+    def auto_migrate(self) -> bool:
+        return (not self.is_production) if self.db_auto_migrate is None else self.db_auto_migrate
 
     @property
     def trusted_proxies(self) -> list[str]:
@@ -570,6 +621,13 @@ class Settings(BaseSettings):
                 "job_deadline_s": self.eval_job_deadline_s,
                 "max_round_runs": self.eval_max_round_runs,
                 "max_tokens": self.eval_max_tokens,
+                "strict_schema_models": sorted(self.eval_strict_schema_models),
+            },
+            "database": {
+                # Backend and host only; the URL (and any password) is never shown.
+                "backend": self.database_backend,
+                "pool_max": self.db_pool_max_size,
+                "auto_migrate": self.auto_migrate,
             },
             "session_budget": {
                 "max_session_seconds": self.max_session_seconds,

@@ -9,6 +9,7 @@ monkeypatching settings or the budget function, never by sleeping for minutes.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import time
 
@@ -227,26 +228,40 @@ def test_deletion_racing_a_timeout_leaves_nothing_behind(srv, monkeypatch) -> No
 def test_slot_is_released_even_if_ending_fails(srv, monkeypatch) -> None:
     with TestClient(srv.app) as client:
         headers, intake_id = _prepared(client)
-        with client.websocket_connect("/ws/session") as ws:
-            ready = _start(ws, headers, intake_id)
-            read_until(ws, {"agent_utterance_end"})
-            ctx = srv._LIVE[ready["session_id"]]
+        try:
+            with client.websocket_connect("/ws/session") as ws:
+                ready = _start(ws, headers, intake_id)
+                read_until(ws, {"agent_utterance_end"})
+                ctx = srv._LIVE[ready["session_id"]]
+        except concurrent.futures.CancelledError:
+            # Starlette's TestClient can cancel the server task while it is
+            # processing a mid-session disconnect (seen at HEAD in
+            # test_h_reconnect too). Harness teardown only: the assertions
+            # below check the server state directly.
+            pass
+        # The socket is gone and the session is parked. Finalising it here, rather
+        # than while the socket is open, avoids racing the TestClient's WebSocket
+        # teardown (which cancels a still-running app task); the property under
+        # test is unchanged: a failing end() must still release the slot.
+        wait_for(lambda: ready["session_id"] in srv._PARKED, bool, timeout=5)  # parking is asynchronous
+        assert srv.SESSION_CAP.live == 1
 
-            async def boom(*args, **kwargs):
-                raise RuntimeError("synthetic end failure")
+        async def boom(*args, **kwargs):
+            raise RuntimeError("synthetic end failure")
 
-            monkeypatch.setattr(ctx.live, "end", boom)
+        monkeypatch.setattr(ctx.live, "end", boom)
 
-            async def close():
-                try:
-                    await srv._close_out(ctx, reason="time_limit")
-                except RuntimeError:
-                    return "raised"
-                return "ok"
+        async def close():
+            try:
+                await srv._close_out(ctx, reason="time_limit")
+            except RuntimeError:
+                return "raised"
+            return "ok"
 
-            assert client.portal.call(close) == "raised"
-            assert srv.SESSION_CAP.live == 0
-            assert ready["session_id"] not in srv._LIVE
+        assert client.portal.call(close) == "raised"
+        assert srv.SESSION_CAP.live == 0
+        assert ready["session_id"] not in srv._LIVE
+        assert ready["session_id"] not in srv._PARKED, "the park timer is cancelled too"
 
 
 # ---------------------------------------------------------------------------

@@ -16,6 +16,10 @@ What it does:
   3. Copies every other file (JSON/JSONL written atomically by the app).
   4. Writes manifest.json: SHA-256 and size of every file, integrity results,
      the deletion-ledger length, and the app version from the environment.
+  4b. With PostgreSQL (DATABASE_URL set): a consistent snapshot of the report
+     index (one REPEATABLE READ transaction, CSV per table) under postgres/,
+     checksummed in the manifest. Take it with --quiesce-url so files and
+     database describe the same moment.
   5. Packs a .tar.gz with owner-only permissions, prunes to --keep archives,
      and optionally copies the archive to a PRIVATE S3 prefix with the AWS CLI.
   6. Removes OPERATOR_STOP if this run created it.
@@ -42,6 +46,8 @@ import time
 import urllib.request
 from contextlib import closing
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 SKIP_NAMES = {"OPERATOR_STOP", ".ready-probe"}
 SKIP_SUFFIXES = ("-journal", "-wal", "-shm")
@@ -76,7 +82,7 @@ def quiesce(url: str, data_dir: Path, wait_s: float) -> bool:
     return created
 
 
-def backup(data_dir: Path, out_dir: Path, *, keep: int = 7, label: str = "") -> Path:
+def backup(data_dir: Path, out_dir: Path, *, keep: int = 7, label: str = "", pg_store=None) -> Path:
     data_dir = data_dir.resolve()
     if not data_dir.is_dir():
         raise SystemExit(f"data dir not found: {data_dir}")
@@ -110,6 +116,16 @@ def backup(data_dir: Path, out_dir: Path, *, keep: int = 7, label: str = "") -> 
         bad = {k: v for k, v in integrity.items() if v != "ok"}
         if bad:
             raise SystemExit(f"integrity check failed, no archive written: {bad}")
+        postgres = None
+        if pg_store is not None:
+            from interview.storage.ops import export_snapshot
+
+            pg_dir = Path(tmp) / "postgres"
+            snapshot = export_snapshot(pg_store, pg_dir)
+            postgres = {
+                "snapshot": snapshot,
+                "files": {p.name: {"sha256": sha256(p), "bytes": p.stat().st_size} for p in sorted(pg_dir.iterdir())},
+            }
         ledger = stage / "deletion-ledger.jsonl"
         manifest = {
             "format": "shadowtrace-backup/1",
@@ -120,6 +136,7 @@ def backup(data_dir: Path, out_dir: Path, *, keep: int = 7, label: str = "") -> 
             "files": files,
             "sqlite_integrity": integrity,
             "deletion_ledger_entries": sum(1 for _ in ledger.open(encoding="utf-8")) if ledger.exists() else 0,
+            "postgres": postgres,
         }
         (Path(tmp) / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         archive = out_dir / f"{name}.tar.gz"
@@ -127,6 +144,8 @@ def backup(data_dir: Path, out_dir: Path, *, keep: int = 7, label: str = "") -> 
         with tarfile.open(partial, "w:gz") as tar:
             tar.add(Path(tmp) / "manifest.json", arcname="manifest.json")
             tar.add(stage, arcname="data")
+            if postgres is not None:
+                tar.add(Path(tmp) / "postgres", arcname="postgres")
         os.chmod(partial, 0o600)
         partial.replace(archive)
     archives = sorted(out_dir.glob("shadowtrace-*.tar.gz"))
@@ -146,8 +165,14 @@ def main() -> int:
     parser.add_argument("--s3-uri", default="", help="optional private s3://bucket/prefix/ (uses the AWS CLI)")
     args = parser.parse_args()
     created_stop = quiesce(args.quiesce_url, args.data_dir, args.quiesce_wait_s) if args.quiesce_url else False
+    pg_store = None
+    if os.environ.get("DATABASE_URL", "").startswith(("postgresql://", "postgres://")):
+        from interview.config import get_settings
+        from interview.storage import open_report_store
+
+        pg_store = open_report_store(get_settings(), args.data_dir)
     try:
-        archive = backup(args.data_dir, args.out_dir, keep=args.keep, label=args.label)
+        archive = backup(args.data_dir, args.out_dir, keep=args.keep, label=args.label, pg_store=pg_store)
     finally:
         if created_stop:
             (args.data_dir / "OPERATOR_STOP").unlink(missing_ok=True)

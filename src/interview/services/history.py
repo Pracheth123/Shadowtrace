@@ -62,6 +62,9 @@ def session_rows(registry: CandidateRegistry, store: ReportStore, candidate_id: 
                 "error": meta.get("error"),
                 "kind": meta.get("kind") or "interview",
                 "practice": meta.get("practice"),
+                # Reported, not hidden: a completed session whose report file is gone.
+                "report_missing": meta.get("state") == "complete"
+                and not (registry.session_dir(candidate_id, session_id) / "evaluation" / "report.json").is_file(),
                 "open_disputes": sum(
                     1
                     for d in read_disputes(registry.session_dir(candidate_id, session_id)).values()

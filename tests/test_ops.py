@@ -6,6 +6,7 @@ deletion replay. Synthetic data in tmp_path; the server is the real app.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import sys
 import tarfile
@@ -29,6 +30,15 @@ from tests.test_stage15_journey import (  # noqa: E402,F401 — `srv` is a fixtu
     interview,
     run_intake,
     srv,
+)
+
+
+# These two round trips read the SQLite report file directly. When the suite
+# runs on PostgreSQL, the equivalent PostgreSQL round trip (snapshot, later
+# deletion, isolated restore, reconcile) is tests/test_postgres_store.py.
+sqlite_only = pytest.mark.skipif(
+    os.environ.get("DATABASE_URL", "").startswith("postgres"),
+    reason="SQLite-file round trip; PostgreSQL covered in test_postgres_store.py",
 )
 
 
@@ -79,6 +89,7 @@ def test_ready_reports_checks_and_operator_stop_pauses_new_work(srv) -> None:
         assert client.post("/api/guest").status_code == 200
 
 
+@sqlite_only
 def test_backup_restore_round_trip_replays_later_deletions(srv, tmp_path: Path) -> None:
     with TestClient(srv.app) as client:
         headers_a, candidate_a = _candidate_with_report(client)
@@ -108,6 +119,7 @@ def test_backup_restore_round_trip_replays_later_deletions(srv, tmp_path: Path) 
     assert candidate_a in (target / "deletion-ledger.jsonl").read_text(encoding="utf-8")
 
 
+@sqlite_only
 def test_restore_refuses_a_tampered_archive_and_keeps_existing_data(srv, tmp_path: Path) -> None:
     with TestClient(srv.app) as client:
         _candidate_with_report(client)

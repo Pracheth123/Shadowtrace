@@ -311,6 +311,13 @@ def _paused() -> JSONResponse:
     )
 
 
+def _ledger_path() -> Path:
+    """DELETION_LEDGER_PATH, or DATA_DIR/deletion-ledger.jsonl. Production keeps
+    it outside DATA_DIR so restoring an older backup can never replace it."""
+    configured = get_settings().deletion_ledger_path
+    return Path(configured) if configured else _data_root() / DELETION_LEDGER
+
+
 def _record_deletion(candidate_id: str) -> None:
     """
     Append the erased candidate id to a ledger beside the data. Backups taken
@@ -318,7 +325,7 @@ def _record_deletion(candidate_id: str) -> None:
     this ledger after any restore so deleted data stays deleted.
     The id is a random identifier, not personal data.
     """
-    ledger = _data_root() / DELETION_LEDGER
+    ledger = _ledger_path()
     ledger.parent.mkdir(parents=True, exist_ok=True)
     with ledger.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps({"candidate_id": candidate_id, "deleted_at": _now()}) + "\n")
@@ -390,8 +397,6 @@ async def ready():
     providers are present. 503 with the failing checks otherwise. Configured
     is not verified: provider authentication is POST /api/diagnostics/verify.
     """
-    import sqlite3
-
     settings = get_settings()
     checks: dict[str, bool] = {}
     data_dir = _data_root()
@@ -403,12 +408,18 @@ async def ready():
         checks["data_dir_writable"] = True
     except OSError:
         checks["data_dir_writable"] = False
+    # Connectivity and schema state of the report index (SQLite or PostgreSQL),
+    # off the event loop. No model or provider call is made here.
+    checks["report_store"] = await asyncio.to_thread(REPORT_STORE.ping)
+    checks["report_store_schema"] = checks["report_store"] and await asyncio.to_thread(REPORT_STORE.schema_ready)
     try:
-        with sqlite3.connect(REPORT_STORE.path, timeout=2) as conn:
-            conn.execute("select 1").fetchone()
-        checks["report_store"] = True
-    except Exception:  # noqa: BLE001
-        checks["report_store"] = False
+        ledger = _ledger_path()
+        ledger.parent.mkdir(parents=True, exist_ok=True)
+        with ledger.open("a", encoding="utf-8"):
+            pass
+        checks["deletion_ledger_writable"] = True
+    except OSError:
+        checks["deletion_ledger_writable"] = False
     checks["interviewer_available"] = settings.interviewer_mode != "unavailable"
     checks["evaluator_available"] = settings.evaluator_mode != "unavailable"
     if settings.is_production:
@@ -418,6 +429,7 @@ async def ready():
         "ready": ok,
         "checks": checks,
         "operator_stop": _operator_stopped(),
+        "report_store_backend": REPORT_STORE.backend,
         "app_env": settings.app_env,
         "version": settings.app_version,
         "git_sha": settings.git_sha,
@@ -438,6 +450,7 @@ async def diagnostics():
             "live_sessions": SESSION_CAP.live,
             "session_limit": SESSION_CAP.limit,
             "evaluation_jobs_active": EVALUATION.active_jobs(),
+            "report_store": await asyncio.to_thread(REPORT_STORE.describe),
             "evaluation_queue_max": settings.eval_queue_max,
             "evaluation_concurrency": EVALUATION.concurrency or settings.eval_concurrency,
             "model_limiter": get_shared_limiter(settings.groq_requests_per_minute).snapshot(),
@@ -708,7 +721,7 @@ async def list_sessions(authorization: str | None = Header(default=None)):
         candidate_id = _candidate(authorization)
     except UnknownCandidate:
         return _error(401, "Not signed in.")
-    return {"sessions": session_rows(REGISTRY, REPORT_STORE, candidate_id)}
+    return {"sessions": await asyncio.to_thread(session_rows, REGISTRY, REPORT_STORE, candidate_id)}
 
 
 @app.get("/api/sessions/{session_id}")
@@ -1066,15 +1079,19 @@ async def history(authorization: str | None = Header(default=None)):
         candidate_id = _candidate(authorization)
     except UnknownCandidate:
         return _error(401, "Not signed in.")
-    return {
-        "sessions": session_rows(REGISTRY, REPORT_STORE, candidate_id),
-        "comparisons": comparisons(REPORT_STORE, candidate_id, REGISTRY),
-        "recurring_gaps": recurring_gaps(REPORT_STORE, candidate_id, REGISTRY),
-        "practice": [
-            practice_view(REGISTRY, candidate_id, record)
-            for record in list_practices(REGISTRY, candidate_id)
-        ],
-    }
+    # Report-index reads (and the files they reference) run off the event loop.
+    def build() -> dict:
+        return {
+            "sessions": session_rows(REGISTRY, REPORT_STORE, candidate_id),
+            "comparisons": comparisons(REPORT_STORE, candidate_id, REGISTRY),
+            "recurring_gaps": recurring_gaps(REPORT_STORE, candidate_id, REGISTRY),
+            "practice": [
+                practice_view(REGISTRY, candidate_id, record)
+                for record in list_practices(REGISTRY, candidate_id)
+            ],
+        }
+
+    return await asyncio.to_thread(build)
 
 
 @app.get("/api/plan")
@@ -1083,7 +1100,7 @@ async def plan(authorization: str | None = Header(default=None)):
         candidate_id = _candidate(authorization)
     except UnknownCandidate:
         return _error(401, "Not signed in.")
-    return practice_plan(REGISTRY, REPORT_STORE, candidate_id)
+    return await asyncio.to_thread(practice_plan, REGISTRY, REPORT_STORE, candidate_id)
 
 
 @app.post("/api/me/delete")
@@ -1134,7 +1151,7 @@ async def erase_candidate(candidate_id: str) -> dict:
         if task is not None and not task.done():
             task.cancel()
             cancelled += 1
-    report_rows = REPORT_STORE.delete_candidate(candidate_id)
+    report_rows = await asyncio.to_thread(REPORT_STORE.delete_candidate, candidate_id)
     legacy = delete_candidate_data(
         candidate_id,
         store_path=STORE_PATH,
@@ -1996,6 +2013,15 @@ async def _run_socket(websocket: WebSocket, ctx: SessionContext, *, opening: dic
 
     except WebSocketDisconnect:
         dropped = True
+    except asyncio.CancelledError:
+        # The handler itself was cancelled (server shutdown, an ASGI host
+        # cancelling the task). Treat it as a dropped socket so the session is
+        # parked and then closed through the normal path, rather than holding
+        # its slot until the watchdog's idle limit.
+        if not live._closed and not ctx.closed_out and session_id not in _PARKED:
+            ctx.holder.ws = None
+            _PARKED[session_id] = asyncio.get_running_loop().create_task(_park(ctx))
+        raise
 
     if dropped and not live._closed and not ctx.closed_out:
         if dropped_binary:

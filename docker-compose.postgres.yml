@@ -1,0 +1,22 @@
+# Local PostgreSQL for development and the PostgreSQL test run. Matches the RDS
+# major version planned for deployment (16). Credentials come from your shell:
+#   $env:POSTGRES_PASSWORD = "<choose one>"; docker compose -f docker-compose.postgres.yml up -d
+# Then: DATABASE_URL=postgresql://shadowtrace:<password>@127.0.0.1:55432/shadowtrace
+services:
+  postgres:
+    image: postgres:16.4
+    environment:
+      POSTGRES_USER: shadowtrace
+      POSTGRES_DB: shadowtrace
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - shadowtrace-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shadowtrace -d shadowtrace"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+volumes:
+  shadowtrace-pg:
