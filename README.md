@@ -10,6 +10,7 @@ Scores are **experimental coaching indicators**. They are not hiring
 predictions, not judgements of truth or honesty, and have not been validated
 against human review. Nothing here screens, ranks or gates anyone.
 
+- Design system (tokens, fonts, page compositions, motion): [`docs/DESIGN_SYSTEM.md`](docs/DESIGN_SYSTEM.md)
 - UI refresh, browser test evidence and local walkthrough: [`docs/UI_REFRESH.md`](docs/UI_REFRESH.md)
 - Architecture: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 - API and report schema: [`docs/API.md`](docs/API.md)

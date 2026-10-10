@@ -47,6 +47,34 @@ function PaperFlight({ kind, track, index, progress, size, width, highlights }: 
   );
 }
 
+/**
+ * A card that is faded out must also leave the tab order and the accessibility
+ * tree: opacity and pointer-events alone left the compact stage-3 interviewer
+ * tabs focusable while invisible. `inert` is toggled only when the card crosses
+ * the visibility threshold, never per frame. If focus is inside a card as it
+ * hides, it moves to the current step button first, so it never drops to <body>.
+ */
+function useInertWhenHidden(opacity: MotionValue<number>) {
+  const ref = useRef<HTMLDivElement>(null);
+  const apply = (value: number) => {
+    const el = ref.current;
+    if (!el) return;
+    const hidden = value <= 0.5;
+    if (hidden === el.inert) return;
+    if (hidden && el.contains(document.activeElement)) {
+      const step = el.closest(".story")?.querySelector<HTMLElement>(".story-steps button[aria-current=step]");
+      step?.focus({ preventScroll: true });
+    }
+    el.inert = hidden;
+    if (hidden) el.setAttribute("aria-hidden", "true");
+    else el.removeAttribute("aria-hidden");
+  };
+  useMotionValueEvent(opacity, "change", apply);
+  // Mount and layout-mode changes: sync with the value as it is now. Idempotent.
+  useLayoutEffect(() => apply(opacity.get()));
+  return ref;
+}
+
 interface Geometry { w: number; h: number; statementY: number; paperH: number; questionY: number }
 
 function Stage({ mode, progress, role, onRole, onCardFocus }: { mode: "pinned" | "compact"; progress: MotionValue<number>; role: number; onRole: (index: number) => void; onCardFocus: () => void }) {
@@ -87,6 +115,8 @@ function Stage({ mode, progress, role, onRole, onCardFocus }: { mode: "pinned" |
   const feedback = usePose(progress, size, cards.feedback);
   const interviewEvents = useTransform(interview.opacity, (o) => (o > 0.5 ? "auto" : "none"));
   const feedbackEvents = useTransform(feedback.opacity, (o) => (o > 0.5 ? "auto" : "none"));
+  const interviewRef = useInertWhenHidden(interview.opacity);
+  const feedbackRef = useInertWhenHidden(feedback.opacity);
   const connectorLength = useWindow(progress, 0.52, 0.6);
   const connectorOpacity = useTransform(progress, [0.5, 0.53, 0.74, 0.79], [0, 1, 1, 0]);
 
@@ -124,11 +154,12 @@ function Stage({ mode, progress, role, onRole, onCardFocus }: { mode: "pinned" |
           </svg>
         )}
       </div>
-      {/* Interactive layer: cards sit above the decorative papers and stay out of the aria-hidden subtree. */}
-      <m.div className="story-card-wrap" data-card="interview" style={{ ...interview, pointerEvents: interviewEvents }}>
+      {/* Interactive layer: cards sit above the decorative papers and stay out of the aria-hidden subtree.
+          A card is inert (unfocusable, hidden from assistive technology) whenever it is faded out. */}
+      <m.div ref={interviewRef} className="story-card-wrap" data-card="interview" style={{ ...interview, pointerEvents: interviewEvents }}>
         <InterviewCard selected={role} onSelect={onRole} onFocusWithin={onCardFocus} />
       </m.div>
-      <m.div className="story-card-wrap" data-card="feedback" style={{ ...feedback, pointerEvents: feedbackEvents }}>
+      <m.div ref={feedbackRef} className="story-card-wrap" data-card="feedback" style={{ ...feedback, pointerEvents: feedbackEvents }}>
         <FeedbackCard selected={role} />
       </m.div>
     </div>
@@ -201,7 +232,8 @@ export function ResumeScrollStory({ copy, nextId }: { copy: ReactNode; nextId: s
     const span = section.offsetHeight - window.innerHeight;
     window.scrollTo({ top: stage === 0 ? 0 : top + STAGE_TARGET[stage] * span, behavior: "smooth" });
   };
-  // A keyboard user tabbing into the interview card before it is on stage brings it on stage.
+  // Hidden cards are inert, so keyboard users reach them through the step buttons.
+  // This only matters at the visibility threshold, while the stage index catches up.
   const onCardFocus = () => { if (activeRef.current < 2) select(2); };
   const skip = () => {
     const next = document.getElementById(nextId);
@@ -211,7 +243,7 @@ export function ResumeScrollStory({ copy, nextId }: { copy: ReactNode; nextId: s
   };
 
   return (
-    <section ref={sectionRef} className="story" data-mode={mode} data-stage={active} aria-labelledby="hero-title">
+    <section ref={sectionRef} className="story on-charcoal" data-mode={mode} data-stage={active} aria-labelledby="hero-title">
       <div className="story-sticky">
         <div className="story-grid content-width">
           <div className="story-copy">

@@ -28,7 +28,7 @@ export function PracticeCompare() {
             <p className="compare-label">Illustrative example · not your feedback</p>
             <div className="compare-row compare-before"><span>Original wording</span><p>“I led the launch. We worked closely as a team and it was a big success.”</p></div>
             <div className="compare-row compare-after"><span>Clearer example</span><p>“I owned the rollout plan. I released to a small group first, removed a confusing step that support flagged, then launched fully.”</p></div>
-            <div className="compare-coach"><SparkleIcon size={14} aria-hidden="true" /><p><strong>Coaching point:</strong> replace “we” with one decision you made, and say what it changed.</p></div>
+            <div className="compare-coach"><SparkleIcon size={14} aria-hidden="true" /><p><strong>Coaching point:</strong> keep the team context, and add one decision that was yours and what it changed.</p></div>
           </m.div>
         )}
       </AnimatePresence>

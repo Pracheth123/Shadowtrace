@@ -104,6 +104,16 @@ ROUND_CLOSERS = {
     "client": (
         "Thanks — we'll stop here. Your feedback will only cover what we got to."
     ),
+    # Server-enforced session ceiling (MAX_SESSION_SECONDS / plan + grace).
+    "time_limit": (
+        "We've reached the session time limit, so we'll stop here. Your feedback "
+        "is being prepared and will only cover what we got to."
+    ),
+    # No input for SESSION_IDLE_SECONDS.
+    "idle": (
+        "We haven't heard from you for a while, so we'll stop here. Your feedback "
+        "will only cover what we got to."
+    ),
 }
 
 
@@ -226,6 +236,9 @@ class LiveSession:
         self._round_followups = 0
         self._current_competency = ""
         self.ended_reason = ""
+        # Set when end() has finished (closer spoken, transcript written), so a
+        # concurrent close path can wait for it before tearing down speech.
+        self._end_done = asyncio.Event()
         # Stage 16 audit: every turn where the model was configured but the
         # role's plan-based proposer had to ask instead. Reported in meta.json
         # and on screen; never presented as an AI-chosen question.
@@ -788,11 +801,30 @@ class LiveSession:
             )
         await self._speak_fixed(OPENER, turn_id="turn-opener")
 
-    async def end(self, reason: str = "client") -> None:
+    async def end(self, reason: str = "client", *, speak_closer: bool = True) -> None:
+        """
+        End the session once. `speak_closer=False` skips the spoken closer (no
+        one is connected to hear it) but still writes the transcript.
+        """
         if self._closed:
             return
         self._closed = True
         self.ended_reason = reason
+        try:
+            await self._end(reason, speak_closer=speak_closer)
+        finally:
+            self._end_done.set()
+
+    async def wait_ended(self, timeout: float = 15.0) -> None:
+        """Wait (bounded) for an end() already in progress to finish."""
+        if not self._closed:
+            return
+        try:
+            await asyncio.wait_for(self._end_done.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            log.warning("end() still running after %.0f s; continuing close", timeout)
+
+    async def _end(self, reason: str, *, speak_closer: bool) -> None:
         # A reply task that is the caller (the round ending itself) must not
         # cancel itself; any other in-flight generation is stopped.
         if self._gen_task is not None and self._gen_task is asyncio.current_task():
@@ -802,7 +834,7 @@ class LiveSession:
         if self.discard_outputs:
             # The candidate deleted their data. Nothing is spoken or written.
             return
-        if reason not in ("closer_already_spoken", "disconnect"):
+        if speak_closer and reason not in ("closer_already_spoken", "disconnect"):
             closer = (
                 ROUND_CLOSERS.get(reason, ROUND_CLOSERS["limit"])
                 if self._coordinator is not None

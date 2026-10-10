@@ -51,6 +51,9 @@ Env:
     PANEL_MODE=1        allow legacy multi-voice panel packs (off by default)
     MAX_LIVE_SESSIONS   concurrent live session cap, default 8
     INTAKE_RPH          intake requests per candidate per hour, default 10
+    MAX_SESSION_SECONDS hard per-session ceiling (watchdog), default 900
+    SESSION_IDLE_SECONDS  end a session after this long without input, default 300
+    TRUSTED_PROXIES     proxies whose X-Forwarded-For is believed (see .env.example)
 
 Video: there is deliberately no video ingest path. The client may show a local
 camera preview, but no frame is ever sent here (contract 9).
@@ -60,6 +63,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import time
 import uuid
@@ -85,10 +89,14 @@ from interview.events.log import EventLogger
 from interview.events.schema import BargeIn, PlaybackAck, Truncate
 from interview.hardening.erasure import UnsafeIdentifier, delete_candidate_data
 from interview.hardening.limits import (
+    GLOBAL_KEY,
+    Admission,
+    AdmissionRefused,
     RateLimit,
     RateLimiter,
     SessionCap,
     SessionCapExceeded,
+    client_address,
 )
 from interview.hardening.reconnect import ReconnectRegistry
 from interview.intake.documents import (
@@ -194,8 +202,24 @@ PANEL_VOICES = {
 
 # Limits come from the validated settings (env > .env > defaults).
 SESSION_CAP = SessionCap(limit=_SETTINGS.max_live_sessions)
-INTAKE_LIMITER = RateLimiter(RateLimit(max_events=_SETTINGS.intake_rph, window_s=3600.0))
-GUEST_LIMITER = RateLimiter(RateLimit(max_events=20, window_s=3600.0))
+
+
+def _hourly(n: int) -> RateLimiter:
+    return RateLimiter(RateLimit(max_events=n, window_s=3600.0))
+
+
+# Admission. Each billable path is limited per candidate, per client address
+# and (where a burst of new guests could otherwise bypass both) process-wide.
+INTAKE_LIMITER = _hourly(_SETTINGS.intake_rph)
+INTAKE_ADDRESS_LIMITER = _hourly(_SETTINGS.address_intakes_per_hour)
+INTAKE_GLOBAL_LIMITER = _hourly(_SETTINGS.global_intakes_per_hour)
+GUEST_LIMITER = _hourly(_SETTINGS.guests_per_address_per_hour)
+GUEST_GLOBAL_LIMITER = _hourly(_SETTINGS.global_guests_per_hour)
+START_LIMITER = _hourly(_SETTINGS.session_starts_per_hour)
+START_ADDRESS_LIMITER = _hourly(_SETTINGS.address_session_starts_per_hour)
+PRACTICE_LIMITER = _hourly(_SETTINGS.practice_per_hour)
+RETRY_LIMITER = _hourly(_SETTINGS.eval_retries_per_hour)
+REVISION_LIMITER = _hourly(_SETTINGS.revisions_per_hour)
 RECONNECT = ReconnectRegistry(ttl_s=_SETTINGS.resume_ttl_s)
 _PARK_TTL_S = _SETTINGS.resume_ttl_s
 _PARKED: dict[str, asyncio.Task] = {}
@@ -252,6 +276,73 @@ def _candidate(authorization: str | None) -> str:
     return REGISTRY.resolve(authorization)
 
 
+def _address(conn: Request | WebSocket) -> str:
+    """Client address for limits; forwarding headers only from TRUSTED_PROXIES."""
+    peer = conn.client.host if conn.client else None
+    return client_address(peer, conn.headers, get_settings().trusted_proxies)
+
+
+OPERATOR_STOP_FILE = "OPERATOR_STOP"
+DELETION_LEDGER = "deletion-ledger.jsonl"
+
+
+def _data_root() -> Path:
+    """DATA_DIR as the running services see it (the registry lives in DATA_DIR/candidates)."""
+    return REGISTRY.root.parent
+
+
+def _operator_stopped() -> bool:
+    """
+    Operator stop: `touch $DATA_DIR/OPERATOR_STOP` refuses new guests, intakes,
+    sessions, practice set-ups, retries and re-checks with 503, while live
+    sessions finish normally. Remove the file to resume. No restart needed.
+    """
+    return (_data_root() / OPERATOR_STOP_FILE).exists()
+
+
+def _paused() -> JSONResponse:
+    return JSONResponse(
+        {
+            "error": "New sessions are paused by the operator.",
+            "recovery": "Nothing was started or charged. Please try again later.",
+        },
+        status_code=503,
+        headers={"Retry-After": "300"},
+    )
+
+
+def _record_deletion(candidate_id: str) -> None:
+    """
+    Append the erased candidate id to a ledger beside the data. Backups taken
+    before the erasure still contain the data; tools/ops/restore.py replays
+    this ledger after any restore so deleted data stays deleted.
+    The id is a random identifier, not personal data.
+    """
+    ledger = _data_root() / DELETION_LEDGER
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    with ledger.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"candidate_id": candidate_id, "deleted_at": _now()}) + "\n")
+
+
+def _wait_words(seconds: int) -> str:
+    return f"{seconds} seconds" if seconds < 120 else f"{round(seconds / 60)} minutes"
+
+
+def _refused(exc: AdmissionRefused) -> JSONResponse:
+    return JSONResponse(
+        {
+            "error": str(exc),
+            "retry_after_s": exc.retry_after_s,
+            "recovery": (
+                "Nothing was started or charged. "
+                f"Try again in about {_wait_words(exc.retry_after_s)}."
+            ),
+        },
+        status_code=429,
+        headers={"Retry-After": str(exc.retry_after_s)},
+    )
+
+
 # ---------------------------------------------------------------------------
 # Health
 # ---------------------------------------------------------------------------
@@ -284,13 +375,74 @@ async def health():
         },
         "retention_days": settings.guest_retention_days,
         "practice_minutes": list(PRACTICE_MINUTES),
+        "session_limits": {
+            "max_session_seconds": settings.max_session_seconds,
+            "idle_seconds": settings.session_idle_seconds,
+        },
     }
+
+
+@app.get("/ready")
+async def ready():
+    """
+    Readiness for a load balancer or deploy script: the data directory is
+    writable, the report store answers, and (in production) the configured
+    providers are present. 503 with the failing checks otherwise. Configured
+    is not verified: provider authentication is POST /api/diagnostics/verify.
+    """
+    import sqlite3
+
+    settings = get_settings()
+    checks: dict[str, bool] = {}
+    data_dir = _data_root()
+    try:
+        data_dir.mkdir(parents=True, exist_ok=True)
+        probe = data_dir / ".ready-probe"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+        checks["data_dir_writable"] = True
+    except OSError:
+        checks["data_dir_writable"] = False
+    try:
+        with sqlite3.connect(REPORT_STORE.path, timeout=2) as conn:
+            conn.execute("select 1").fetchone()
+        checks["report_store"] = True
+    except Exception:  # noqa: BLE001
+        checks["report_store"] = False
+    checks["interviewer_available"] = settings.interviewer_mode != "unavailable"
+    checks["evaluator_available"] = settings.evaluator_mode != "unavailable"
+    if settings.is_production:
+        checks["no_mock_providers"] = settings.interviewer_mode == "groq" and settings.evaluator_mode == "groq"
+    ok = all(checks.values())
+    body = {
+        "ready": ok,
+        "checks": checks,
+        "operator_stop": _operator_stopped(),
+        "app_env": settings.app_env,
+        "version": settings.app_version,
+        "git_sha": settings.git_sha,
+    }
+    return JSONResponse(body, status_code=200 if ok else 503)
 
 
 @app.get("/api/diagnostics")
 async def diagnostics():
     """Effective configuration and readiness. Never contains a secret."""
-    return diag.readiness(get_settings())
+    from interview.llm.client import get_shared_limiter
+
+    settings = get_settings()
+    return {
+        **diag.readiness(settings),
+        # Live process state: counts only, no candidate or request content.
+        "runtime": {
+            "live_sessions": SESSION_CAP.live,
+            "session_limit": SESSION_CAP.limit,
+            "evaluation_jobs_active": EVALUATION.active_jobs(),
+            "evaluation_queue_max": settings.eval_queue_max,
+            "evaluation_concurrency": EVALUATION.concurrency or settings.eval_concurrency,
+            "model_limiter": get_shared_limiter(settings.groq_requests_per_minute).snapshot(),
+        },
+    }
 
 
 @app.post("/api/diagnostics/verify")
@@ -299,7 +451,7 @@ async def diagnostics_verify(request: Request):
     Authenticated, non-generating provider checks (Groq GET /models, Deepgram
     GET /v1/projects). Cached for 10 minutes and rate-limited per address.
     """
-    client = request.client.host if request.client else "unknown"
+    client = _address(request)
     cached = diag.last_verification()
     if cached is not None and not DIAGNOSTICS_LIMITER.allow(client):
         return cached
@@ -322,9 +474,15 @@ async def create_guest(request: Request):
     Issue a guest identity. The token is returned once and only its hash is
     stored. Limits: one browser, no recovery; see candidates.py.
     """
-    client = request.client.host if request.client else "unknown"
-    if not GUEST_LIMITER.allow(client):
-        return _error(429, "Too many new guest identities from this address.")
+    if _operator_stopped():
+        return _paused()
+    try:
+        Admission([
+            (GUEST_LIMITER, _address(request), "Too many new guest identities from this address."),
+            (GUEST_GLOBAL_LIMITER, GLOBAL_KEY, "The service is not accepting new guests right now."),
+        ]).admit()
+    except AdmissionRefused as exc:
+        return _refused(exc)
     guest = REGISTRY.create_guest()
     return {
         "candidate_id": guest.candidate_id,
@@ -364,6 +522,7 @@ def round_up(value: float) -> int:
 
 @app.post("/api/intake", status_code=202)
 async def create_intake(
+    request: Request,
     authorization: str | None = Header(default=None),
     target_role: str = Form(""),
     role_family: str = Form("generic"),
@@ -392,13 +551,48 @@ async def create_intake(
             field="consent",
             recovery="Tick the consent box on the setup form, then submit again.",
         )
-    if not INTAKE_LIMITER.allow(candidate_id):
-        retry = round_up(INTAKE_LIMITER.retry_after_s(candidate_id))
-        return JSONResponse(
-            {"error": "Intake limit reached for this hour.", "retry_after_s": retry},
-            status_code=429,
-            headers={"Retry-After": str(retry)},
-        )
+    if _operator_stopped():
+        return _paused()
+    try:
+        admission = Admission([
+            (INTAKE_LIMITER, candidate_id, "Intake limit reached for this hour."),
+            (INTAKE_ADDRESS_LIMITER, _address(request),
+             "Too many interview preparations from this address this hour."),
+            (INTAKE_GLOBAL_LIMITER, GLOBAL_KEY,
+             "The service is preparing too many interviews right now."),
+        ]).admit()
+    except AdmissionRefused as exc:
+        return _refused(exc)
+    # Every refusal below happens before the background job (the billable
+    # part) starts, so it hands the admission back.
+    response = await _create_intake_admitted(
+        candidate_id, target_role=target_role, role_family=role_family, seniority=seniority,
+        round=round, lane=lane, intensity=intensity, background_text=background_text,
+        job_description=job_description, company_context=company_context, repo_url=repo_url,
+        total_minutes=total_minutes, resume=resume, work_sample=work_sample,
+    )
+    if isinstance(response, JSONResponse):
+        admission.refund()
+    return response
+
+
+async def _create_intake_admitted(
+    candidate_id: str,
+    *,
+    target_role: str,
+    role_family: str,
+    seniority: str,
+    round: str,
+    lane: str,
+    intensity: str,
+    background_text: str,
+    job_description: str,
+    company_context: str,
+    repo_url: str,
+    total_minutes: float,
+    resume: UploadFile | None,
+    work_sample: UploadFile | None,
+):
     try:
         resume_doc = await _read_upload(resume)
         sample_doc = await _read_upload(work_sample)
@@ -635,9 +829,25 @@ async def retry_evaluation(
             rounds = [str(r) for r in body["rounds"]]
     except Exception:  # noqa: BLE001 — an empty body means "all failed rounds"
         pass
+    if _operator_stopped():
+        return _paused()
+    if EVALUATION.at_capacity():
+        return _refused(AdmissionRefused("The server is busy evaluating other interviews.", 60.0))
+    try:
+        admission = Admission([
+            (RETRY_LIMITER, candidate_id, "Too many feedback retries this hour."),
+            (RETRY_LIMITER, "addr:" + _address(request),
+             "Too many feedback retries from this address this hour."),
+        ]).admit()
+    except AdmissionRefused as exc:
+        return _refused(exc)
+    before = EVALUATION.status(candidate_id, session_id).get("state")
     meta = EVALUATION.retry(candidate_id, session_id, rounds)
     if meta.get("retry_refused"):
+        admission.refund()
         return _error(409, meta["retry_refused"], state=meta.get("state"))
+    if before != "failed":
+        admission.refund()  # nothing was started
     return {"state": meta.get("state")}
 
 
@@ -708,7 +918,10 @@ async def dispute_status(
 
 @app.post("/api/sessions/{session_id}/findings/{finding_id}/revision")
 async def request_revision(
-    session_id: str, finding_id: str, authorization: str | None = Header(default=None)
+    session_id: str,
+    finding_id: str,
+    request: Request,
+    authorization: str | None = Header(default=None),
 ):
     """A labelled automated re-check of the round, with the candidate's correction."""
     try:
@@ -721,9 +934,20 @@ async def request_revision(
         return _error(exc.status, str(exc))
     if get_settings().evaluator_mode == "unavailable":
         return _error(503, "No evaluation model is configured, so a re-check cannot run.")
+    if _operator_stopped():
+        return _paused()
+    try:
+        admission = Admission([
+            (REVISION_LIMITER, candidate_id, "Too many re-checks this hour."),
+            (REVISION_LIMITER, "addr:" + _address(request),
+             "Too many re-checks from this address this hour."),
+        ]).admit()
+    except AdmissionRefused as exc:
+        return _refused(exc)
     try:
         revision = _feedback().request_revision(candidate_id, session_id, finding_id)
     except FeedbackError as exc:
+        admission.refund()
         return _error(exc.status, str(exc))
     return {"revision": revision}
 
@@ -763,6 +987,23 @@ async def start_practice(request: Request, authorization: str | None = Header(de
         return _error(422, "Send a JSON body.")
     if not isinstance(body, dict):
         return _error(422, "Send a JSON object.")
+    if _operator_stopped():
+        return _paused()
+    try:
+        admission = Admission([
+            (PRACTICE_LIMITER, candidate_id, "Too many practice set-ups this hour."),
+            (START_ADDRESS_LIMITER, _address(request),
+             "Too many sessions from this address this hour."),
+        ]).admit()
+    except AdmissionRefused as exc:
+        return _refused(exc)
+    response = _create_practice_admitted(candidate_id, body)
+    if isinstance(response, JSONResponse):
+        admission.refund()
+    return response
+
+
+def _create_practice_admitted(candidate_id: str, body: dict):
     parent_practice = str(body.get("parent_practice_id") or "") or None
     session_id = str(body.get("session_id") or "")
     finding_id = str(body.get("finding_id") or "")
@@ -903,6 +1144,7 @@ async def erase_candidate(candidate_id: str) -> dict:
     )
     removed = REGISTRY.delete(candidate_id)
     INTAKE_LIMITER.forget(candidate_id)
+    _record_deletion(candidate_id)
     return {
         "candidate_id": candidate_id,
         "session_ids": session_ids,
@@ -1009,6 +1251,29 @@ class SessionContext:
     # writing anything or queueing evaluation.
     discard: bool = False
     closed_out: bool = False
+    # Lifetime. `deadline` is on the monotonic clock and is set once, when the
+    # session is created; a reconnect re-attaches to this ctx and inherits it.
+    deadline: float = 0.0
+    last_activity: float = field(default_factory=time.monotonic)
+    idle_warned: bool = False
+    deadline_warned: bool = False
+    watchdog: asyncio.Task | None = None
+    # The one finalisation in flight; every close path awaits this same task.
+    close_task: asyncio.Task | None = None
+    close_reason: str = ""
+
+    def touch(self) -> None:
+        """Candidate input or interviewer speech: the session is not idle."""
+        self.last_activity = time.monotonic()
+        self.idle_warned = False
+
+    def limits_payload(self) -> dict:
+        settings = get_settings()
+        return {
+            "deadline_s": max(0, round(self.deadline - time.monotonic())),
+            "idle_s": settings.session_idle_seconds,
+            "idle_warning_s": settings.session_idle_warning_s,
+        }
 
 
 async def _reject(websocket: WebSocket, reason: str, code: int = 1008, **extra) -> None:
@@ -1147,11 +1412,42 @@ async def ws_session(websocket: WebSocket):
         await _reject(websocket, "Complete setup first: a session needs your intake.")
         return
 
+    if _operator_stopped():
+        await _reject(
+            websocket,
+            "New sessions are paused by the operator. Please try again later.",
+            code=1013,
+            retry_after_s=300,
+        )
+        return
     session_id = str(uuid.uuid4())
     try:
         SESSION_CAP.acquire(session_id)
     except SessionCapExceeded as exc:
-        await _reject(websocket, str(exc), code=1013)
+        await _reject(
+            websocket,
+            "All interview rooms are in use right now. Try again in a minute or two.",
+            code=1013,
+            detail=str(exc),
+            retry_after_s=60,
+        )
+        return
+    # Starts are limited per candidate and per address, after the cheap
+    # validation above and before any provider connection.
+    address = _address(websocket)
+    try:
+        admission = Admission([
+            (START_LIMITER, candidate_id or f"anon:{address}", "You have started a lot of sessions this hour."),
+            (START_ADDRESS_LIMITER, address, "Too many sessions from this address this hour."),
+        ]).admit()
+    except AdmissionRefused as exc:
+        SESSION_CAP.release(session_id)
+        await _reject(
+            websocket,
+            f"{exc} Try again in about {_wait_words(exc.retry_after_s)}.",
+            code=1013,
+            retry_after_s=exc.retry_after_s,
+        )
         return
 
     if candidate_id is not None:
@@ -1216,6 +1512,7 @@ async def ws_session(websocket: WebSocket):
         )
     else:
         SESSION_CAP.release(session_id)
+        admission.refund()
         await logger.close()
         await _reject(
             websocket,
@@ -1246,6 +1543,7 @@ async def ws_session(websocket: WebSocket):
         candidate_id=candidate_id,
         session_dir=session_dir if candidate_id else None,
         opening=opening,
+        deadline=time.monotonic() + _session_budget_s(interview),
     )
 
     if candidate_id is not None:
@@ -1296,6 +1594,7 @@ async def ws_session(websocket: WebSocket):
     async def on_tts(event) -> None:
         if event.type != "tts_chunk":
             return
+        ctx.touch()
         ctx.word_ts[event.utterance_id] = event.word_timestamps
         if ctx.voice is None and live.config.lane != "text":
             # Mock lane only: a short silence burst so the client's playback
@@ -1308,6 +1607,7 @@ async def ws_session(websocket: WebSocket):
         # Interim STT text, so the room can show the candidate they are being
         # heard. Display only: the recorded answer is still the final transcript.
         # Typed answers put a synthetic partial on the bus; that is not speech.
+        ctx.touch()
         if event.producer == "runtime_ingest":
             return
         await holder.send_text(
@@ -1316,7 +1616,76 @@ async def ws_session(websocket: WebSocket):
 
     bus.subscribe("partial", on_partial)
     _LIVE[session_id] = ctx
+    ctx.watchdog = asyncio.create_task(_watchdog(ctx))
     await _run_socket(websocket, ctx, opening=opening)
+
+
+def _session_budget_s(interview: InterviewConfig | None) -> float:
+    """
+    Wall-time ceiling for one session: MAX_SESSION_SECONDS, or the session's own
+    plan (interview minutes, or a shorter focused practice) plus
+    SESSION_OVERRUN_GRACE_S when that is shorter.
+    """
+    settings = get_settings()
+    budget = float(settings.max_session_seconds)
+    if interview is not None:
+        budget = min(budget, float(interview.total_seconds) + settings.session_overrun_grace_s)
+    return budget
+
+
+async def _watchdog(ctx: SessionContext) -> None:
+    """
+    Independent of any socket: ends the session at its monotonic deadline or
+    after SESSION_IDLE_SECONDS without input, through the one close path.
+    Sends a warning first so the room can say what is about to happen.
+    """
+    settings = get_settings()
+    idle_s = float(settings.session_idle_seconds)
+    idle_warn = float(min(settings.session_idle_warning_s, idle_s)) if idle_s else 0.0
+    deadline_warn = 60.0
+    reason = ""
+    try:
+        while not ctx.closed_out:
+            now = time.monotonic()
+            deadline_left = ctx.deadline - now
+            if deadline_left <= 0:
+                reason = "time_limit"
+                break
+            waits = [deadline_left]
+            if not ctx.deadline_warned and deadline_left > deadline_warn:
+                waits.append(deadline_left - deadline_warn)
+            elif not ctx.deadline_warned:
+                ctx.deadline_warned = True
+                await ctx.holder.send_text(json.dumps({
+                    "type": "session_warning", "reason": "time_limit",
+                    "seconds_left": round(deadline_left),
+                }))
+            if idle_s:
+                idle_left = idle_s - (now - ctx.last_activity)
+                if idle_left <= 0:
+                    reason = "idle"
+                    break
+                waits.append(idle_left)
+                if idle_warn and not ctx.idle_warned:
+                    if idle_left <= idle_warn:
+                        ctx.idle_warned = True
+                        await ctx.holder.send_text(json.dumps({
+                            "type": "session_warning", "reason": "idle",
+                            "seconds_left": round(idle_left),
+                        }))
+                    else:
+                        waits.append(idle_left - idle_warn)
+            await asyncio.sleep(max(0.02, min(waits)))
+    except asyncio.CancelledError:
+        return
+    if reason and not ctx.closed_out:
+        # Recorded as session_complete.ended_reason ("time_limit" / "idle") in
+        # the log and meta.json; no new event kind is needed.
+        ctx.watchdog = None  # finishing; the close path must not cancel this task
+        try:
+            await _close_out(ctx, reason=reason)
+        except Exception:  # noqa: BLE001 — never die silently; the slot is released in _finalise
+            logging.getLogger(__name__).exception("watchdog close failed for %s", ctx.session_id)
 
 
 
@@ -1451,6 +1820,8 @@ async def _run_socket(websocket: WebSocket, ctx: SessionContext, *, opening: dic
                     "frame_ms": 20,
                 },
                 "degraded": ctx.voice_error,
+                # Remaining wall time and the idle policy, so the room can show them.
+                "limits": ctx.limits_payload(),
             }
         )
     )
@@ -1497,6 +1868,8 @@ async def _run_socket(websocket: WebSocket, ctx: SessionContext, *, opening: dic
             except json.JSONDecodeError:
                 continue
             mtype = msg.get("type")
+            if mtype not in ("playback_ack", "ping"):
+                ctx.touch()
 
             if mtype == "session_start":
                 if live.config.interview is None:
@@ -1624,7 +1997,7 @@ async def _run_socket(websocket: WebSocket, ctx: SessionContext, *, opening: dic
     except WebSocketDisconnect:
         dropped = True
 
-    if dropped and not live._closed:
+    if dropped and not live._closed and not ctx.closed_out:
         if dropped_binary:
             await live.note_fallback(
                 "ws_reconnect", f"dropped {dropped_binary} unsolicited binary frame(s)"
@@ -1633,35 +2006,67 @@ async def _run_socket(websocket: WebSocket, ctx: SessionContext, *, opening: dic
         _PARKED[session_id] = asyncio.create_task(_park(ctx))
         return
 
-    await _close_out(ctx)
+    try:
+        await _close_out(ctx)
+    except Exception:  # noqa: BLE001 — the path that started the close reports it
+        logging.getLogger(__name__).exception("finalisation failed for %s", session_id)
     if not dropped:
         await websocket.close(code=1000)
 
 
-async def _close_out(ctx: SessionContext) -> None:
+async def _close_out(ctx: SessionContext, *, reason: str = "disconnect") -> None:
+    """
+    The one finalisation path: explicit end, natural end, time limit, idle,
+    disconnect expiry and deletion all arrive here. The first caller starts it;
+    every later caller awaits the same task, so it runs exactly once (one
+    transcript write, one evaluation enqueue, one slot release).
+    """
+    if ctx.close_task is None:
+        ctx.closed_out = True
+        ctx.close_reason = reason
+        ctx.close_task = asyncio.ensure_future(_finalise(ctx, reason))
+    await asyncio.shield(ctx.close_task)
+
+
+async def _finalise(ctx: SessionContext, reason: str) -> None:
     """
     End the session if still open, release everything, persist, then queue
     evaluation. Evaluation starts only after the live session is closed and the
     log is flushed (contract 6).
     """
-    if ctx.closed_out:
-        return
-    ctx.closed_out = True
     _time = time
 
     ended_ts = _time.time()
     live = ctx.live
-    if ctx.session_dir is not None and not ctx.discard:
-        set_state(ctx.session_dir, "finalising")
-    if not live._closed:
-        await live.end(reason="disconnect")
-    if ctx.voice is not None:
-        await ctx.voice.close()
-        ctx.voice = None
-    RECONNECT.revoke(ctx.session_id)
-    SESSION_CAP.release(ctx.session_id)
-    _PARKED.pop(ctx.session_id, None)
-    _LIVE.pop(ctx.session_id, None)
+    watchdog = ctx.watchdog
+    ctx.watchdog = None
+    if watchdog is not None and watchdog is not asyncio.current_task():
+        watchdog.cancel()
+    parked = _PARKED.pop(ctx.session_id, None)
+    if parked is not None and parked is not asyncio.current_task() and not parked.done():
+        parked.cancel()
+    try:
+        if ctx.session_dir is not None and not ctx.discard:
+            set_state(ctx.session_dir, "finalising")
+        if not live._closed:
+            # Speak the closer only if someone is connected to hear it.
+            await live.end(
+                reason=reason,
+                speak_closer=ctx.holder.ws is not None and reason != "disconnect",
+            )
+        else:
+            # An end() already running elsewhere (client end, natural end):
+            # let it finish its closer and transcript before speech is torn down.
+            await live.wait_ended()
+    finally:
+        # Always release provider connections and the session slot, even if
+        # ending raised; otherwise one failure would leak a live slot.
+        if ctx.voice is not None:
+            await ctx.voice.close()
+            ctx.voice = None
+        RECONNECT.revoke(ctx.session_id)
+        SESSION_CAP.release(ctx.session_id)
+        _LIVE.pop(ctx.session_id, None)
     await ctx.bus.drain()
     await ctx.logger.close()
     if ctx.discard:
@@ -1696,4 +2101,4 @@ async def _park(ctx: SessionContext) -> None:
         await asyncio.sleep(_PARK_TTL_S)
     except asyncio.CancelledError:
         return
-    await _close_out(ctx)
+    await _close_out(ctx, reason="disconnect")

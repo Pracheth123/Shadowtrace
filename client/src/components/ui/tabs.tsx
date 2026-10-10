@@ -113,7 +113,7 @@ export function TabsList({
     <div
       role="tablist"
       className={cn(
-        "inline-flex w-fit items-center gap-1 rounded-lg border border-border bg-muted p-1",
+        "flex w-full flex-wrap items-end gap-x-6 gap-y-1 border-b border-border",
         className,
       )}
       {...props}
@@ -154,10 +154,10 @@ export function TabsTab({ className, value, ...props }: TabsTabProps) {
         focusRelative(value, move);
       }}
       className={cn(
-        "cursor-pointer rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
+        "-mb-px cursor-pointer border-b-2 px-0.5 pb-2.5 pt-1 text-[15px] transition-colors duration-150",
         selected
-          ? "bg-card text-foreground shadow-sm"
-          : "text-muted-foreground hover:text-foreground",
+          ? "border-[var(--brass-detail)] font-semibold text-foreground"
+          : "border-transparent text-muted-foreground hover:border-border hover:text-foreground",
         className,
       )}
       {...props}
@@ -178,7 +178,7 @@ export function TabsPanel({ className, value, ...props }: TabsPanelProps) {
       id={`${baseId}-panel-${value}`}
       aria-labelledby={`${baseId}-tab-${value}`}
       tabIndex={0}
-      className={cn("rounded-lg outline-none", className)}
+      className={cn("mt-6 rounded-lg outline-none", className)}
       {...props}
     />
   );

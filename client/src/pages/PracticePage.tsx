@@ -31,6 +31,8 @@ import {
   segmentedControlRootClassName,
 } from "@/lib/segmented-control";
 import type { SessionOptions } from "@/lib/use-session";
+import { isCaptureSupported } from "@/lib/audio-capture";
+import { canSpeak, readMicPermission, voiceMessage, voiceState, type MicPermission } from "@/lib/voice-availability";
 
 const itemClassName = segmentedControlItemVariants({ className: "grow", state: "checked" });
 
@@ -55,16 +57,29 @@ export function PracticePage({ practiceId, onStart, onOpenSession, onOpenPractic
   const [lane, setLane] = useState<Lane>("text");
   const [consent, setConsent] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [voiceAvailable, setVoiceAvailable] = useState(false);
+  const [health, setHealth] = useState<Record<string, any> | null>(null);
+  const [healthFailed, setHealthFailed] = useState(false);
+  const [micPermission, setMicPermission] = useState<MicPermission>("unknown");
 
   useEffect(() => {
     let active = true;
     fetch(`${HTTP_BASE}/health`)
-      .then((response) => response.ok ? response.json() : null)
-      .then((health) => { if (active) setVoiceAvailable(health?.providers?.voice === "deepgram"); })
-      .catch(() => { if (active) setVoiceAvailable(false); });
+      .then((response) => { if (!response.ok) throw new Error("unavailable"); return response.json(); })
+      .then((body) => { if (active) setHealth(body); })
+      .catch(() => { if (active) setHealthFailed(true); });
+    void readMicPermission().then((result) => { if (active) setMicPermission(result.state); });
     return () => { active = false; };
   }, []);
+
+  const voice = voiceState(health, healthFailed, {
+    captureSupported: isCaptureSupported(),
+    secureContext: window.isSecureContext,
+    micPermission,
+  });
+  const voiceAvailable = canSpeak(voice);
+  useEffect(() => {
+    if (!voiceAvailable && lane === "voice") setLane("text");
+  }, [voiceAvailable, lane]);
 
   const load = useCallback(async () => {
     try {
@@ -87,11 +102,18 @@ export function PracticePage({ practiceId, onStart, onOpenSession, onOpenPractic
     return () => window.clearTimeout(timer);
   }, [load]);
 
-  if (error) return <p className="mx-auto max-w-2xl text-sm text-destructive">{error}</p>;
+  if (error) {
+    return (
+      <div className="mx-auto flex max-w-2xl flex-col items-start gap-3">
+        <p className="notice w-full" data-tone="error" role="alert">{error}</p>
+        <Button variant="outline" onClick={onBack}>Back to history</Button>
+      </div>
+    );
+  }
   if (!practice) {
     return (
-      <p className="mx-auto flex max-w-2xl items-center gap-2 text-sm text-muted-foreground">
-        <LoaderCircleIcon className="size-4 animate-spin" /> Loading your practice…
+      <p className="notice mx-auto max-w-2xl items-center" data-tone="info" role="status">
+        <LoaderCircleIcon className="animate-spin" aria-hidden="true" /> Loading your practice…
       </p>
     );
   }
@@ -129,47 +151,45 @@ export function PracticePage({ practiceId, onStart, onOpenSession, onOpenPractic
             Back to history
           </Button>
         </div>
-        <p className="text-sm text-muted-foreground">
+        <p className="mt-3 font-mono text-[13px] text-muted-foreground">
           {practice.round_label} round · {practice.minutes} minutes ·{" "}
           {practice.mode === "unaided" ? "unaided variation (no checklist, different question)" : "coached practice"} ·
           rubric {practice.rubric_version}
         </p>
       </header>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">What you are practising</CardTitle>
-          <CardDescription>
-            Taken from your stored report.{" "}
-            <Button variant="link" size="sm" className="h-auto p-0" onClick={() => onOpenSession(practice.parent.session_id)}>
-              Open the original report
-            </Button>
-          </CardDescription>
-        </CardHeader>
-        <CardPanel className="flex flex-col gap-2 text-sm">
-          {practice.source_question && (
-            <p>
-              <span className="font-medium">The question:</span> {practice.source_question}
-            </p>
-          )}
-          <p>
-            <span className="font-medium">Your answer then:</span>
-          </p>
-          <blockquote className="border-l-2 border-secondary pl-3 text-muted-foreground">“{practice.source_quote}”</blockquote>
-          <p>
-            <span className="font-medium">Feedback:</span> {practice.finding_explanation}
-          </p>
-          <p className="text-xs text-muted-foreground">
-            Level then: {levelLabel(practice.before.level ?? "insufficient_evidence")}. The attempt is evaluated against
-            the same rubric and only this dimension is compared.
-          </p>
-        </CardPanel>
-      </Card>
+      <section className="practice-target" aria-labelledby="practice-target-heading">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <h2 id="practice-target-heading" className="text-xl">What you are practising</h2>
+          <Button variant="link" size="sm" className="h-auto p-0" onClick={() => onOpenSession(practice.parent.session_id)}>
+            Open the original report
+          </Button>
+        </div>
+        {practice.source_question && (
+          <div className="finding-zone">
+            <span className="meta-label">The question</span>
+            <p className="finding-question">{practice.source_question}</p>
+          </div>
+        )}
+        <div className="finding-zone">
+          <span className="meta-label">Your answer then</span>
+          <blockquote className="finding-quote">“{practice.source_quote}”</blockquote>
+        </div>
+        <div className="finding-zone">
+          <span className="meta-label">Feedback · interpretation, can be challenged</span>
+          <p className="finding-interpretation">{practice.finding_explanation}</p>
+        </div>
+        <p className="text-sm text-muted-foreground">
+          Level then: {levelLabel(practice.before.level ?? "insufficient_evidence")}. The attempt is evaluated against
+          the same rubric and only this dimension is compared. A clearer answer here is about this one answer, not
+          about readiness for a job.
+        </p>
+      </section>
 
       {practice.checklist_visible && (
-        <Card>
+        <Card className="report-section">
           <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-base">
+            <CardTitle className="flex items-center gap-2 text-lg">
               <ClipboardListIcon className="size-4" /> What to explain
             </CardTitle>
             <CardDescription>
@@ -195,13 +215,14 @@ export function PracticePage({ practiceId, onStart, onOpenSession, onOpenPractic
         </Card>
       )}
 
-      <Card>
+      <Card className="report-section">
         <CardHeader>
-          <CardTitle className="text-base">Start an attempt</CardTitle>
+          <CardTitle className="text-lg">Start an attempt</CardTitle>
           <CardDescription>
             A short session with the same interviewer role: two core questions on this competency, with at most two
-            follow-ups each. {voiceAvailable ? "Choose typing or speaking." : "Typing is ready. Speaking requires a configured speech provider."}
+            follow-ups each. {voiceAvailable ? "Choose typing or speaking." : "Typing is ready."}
           </CardDescription>
+          <p id="practice-voice-status" className="voice-status" data-voice-state={voice.kind}>{voiceMessage(voice)}</p>
         </CardHeader>
         <CardPanel className="flex flex-col gap-3">
           <RadioGroupPrimitive
@@ -214,12 +235,12 @@ export function PracticePage({ practiceId, onStart, onOpenSession, onOpenPractic
             <RadioPrimitive.Root className={itemClassName} value="text">
               Type
             </RadioPrimitive.Root>
-            <RadioPrimitive.Root className={itemClassName} value="voice" disabled={!voiceAvailable}>
+            <RadioPrimitive.Root className={itemClassName} value="voice" disabled={!voiceAvailable} aria-describedby="practice-voice-status">
               Speak
             </RadioPrimitive.Root>
           </RadioGroupPrimitive>
-          <label className="flex items-start gap-2 text-xs text-muted-foreground">
-            <input type="checkbox" className="mt-0.5" checked={consent} onChange={(e) => setConsent(e.target.checked)} />
+          <label className="flex items-start gap-2 text-sm text-foreground">
+            <input type="checkbox" className="mt-1 size-[18px] shrink-0 accent-[var(--cobalt)]" checked={consent} onChange={(e) => setConsent(e.target.checked)} />
             I understand my answers are sent to Groq (text model) and, if I speak, to Deepgram (speech), for processing.
           </label>
           <Button
@@ -235,9 +256,9 @@ export function PracticePage({ practiceId, onStart, onOpenSession, onOpenPractic
       </Card>
 
       {practice.comparisons.length > 0 && (
-        <Card>
+        <Card className="report-section">
           <CardHeader>
-            <CardTitle className="text-base">Before and after</CardTitle>
+            <CardTitle className="text-lg">Before and after</CardTitle>
             <CardDescription>
               One dimension, one short attempt. This does not show general readiness, and overall scores are not compared.
             </CardDescription>
@@ -247,7 +268,7 @@ export function PracticePage({ practiceId, onStart, onOpenSession, onOpenPractic
               <ComparisonRow key={cmp.session_id ?? index} index={index} cmp={cmp} onOpenSession={onOpenSession} />
             ))}
             {practice.offer_unaided_variation && (
-              <div className="rounded-md bg-muted px-3 py-2 text-sm">
+              <div className="notice flex-col" data-tone="info">
                 <p>
                   Optional, later: try an <strong>unaided variation</strong> — a differently worded question on the
                   same competency, with no checklist — to check the improvement transfers rather than being memorised.
@@ -274,37 +295,36 @@ function ComparisonRow({
   onOpenSession: (id: string) => void;
 }) {
   return (
-    <div className="flex flex-col gap-1.5 border-b border-border pb-3 text-sm last:border-b-0">
-      <p className="flex flex-wrap items-center gap-2">
-        <span className="font-medium">Attempt {index + 1}</span>
-        <Badge variant={cmp.outcome === "clearer" ? "secondary" : "muted"}>
+    <article className="flex flex-col gap-3 border-b border-border pb-4 text-sm last:border-b-0">
+      <div className="flex flex-wrap items-center gap-2">
+        <h3 className="text-base">Attempt {index + 1}</h3>
+        <span className="outcome-tag" data-outcome={cmp.outcome}>
           {cmp.outcome_label || OUTCOME_LABEL[cmp.outcome]}
-        </Badge>
-        {cmp.coached && <Badge variant="outline" size="sm">coached</Badge>}
+        </span>
+        {cmp.coached && <Badge variant="outline" size="sm">coached — you saw a checklist</Badge>}
         {cmp.mode === "unaided" && <Badge variant="outline" size="sm">unaided</Badge>}
-        <span className="text-xs text-muted-foreground">{cmp.lane === "text" ? "typed" : "spoken"}</span>
-      </p>
+        <span className="meta-label">{cmp.lane === "text" ? "typed" : "spoken"}</span>
+      </div>
       <p className="text-muted-foreground">{cmp.reason}</p>
-      <div className="grid gap-2 sm:grid-cols-2">
-        <div>
-          <p className="text-xs font-medium">Before — {levelLabel(cmp.before?.level ?? "insufficient_evidence")}</p>
-          {cmp.before?.quote && (
-            <blockquote className="border-l-2 border-secondary pl-2 text-xs text-muted-foreground">“{cmp.before.quote}”</blockquote>
-          )}
-        </div>
-        <div>
-          <p className="text-xs font-medium">
-            After — {cmp.after ? levelLabel(cmp.after.level ?? "insufficient_evidence") : "not evaluated yet"}
+      <div className="compare-grid">
+        <section className="compare-side" data-side="before" aria-label={`Attempt ${index + 1}: before`}>
+          <p className="meta-label">Before · {levelLabel(cmp.before?.level ?? "insufficient_evidence")}</p>
+          {cmp.before?.quote ? <blockquote>“{cmp.before.quote}”</blockquote> : <p className="text-muted-foreground">No quote recorded.</p>}
+        </section>
+        <section className="compare-side" data-side="after" aria-label={`Attempt ${index + 1}: after`}>
+          <p className="meta-label">
+            After · {cmp.after ? levelLabel(cmp.after.level ?? "insufficient_evidence") : "not evaluated yet"}
           </p>
           {cmp.after?.citations?.slice(0, 1).map((c, i) => (
-            <blockquote key={i} className="border-l-2 border-secondary pl-2 text-xs text-muted-foreground">“{c.quote}”</blockquote>
+            <blockquote key={i}>“{c.quote}”</blockquote>
           ))}
           {cmp.after?.findings?.slice(0, 1).map((f, i) => (
-            <p key={i} className="text-xs text-muted-foreground">{f.explanation}</p>
+            <p key={i} className="text-muted-foreground">{f.explanation}</p>
           ))}
-        </div>
+          {!cmp.after && <p className="text-muted-foreground">The attempt’s feedback is still being prepared.</p>}
+        </section>
       </div>
-      <ul className="list-disc pl-5 text-xs text-muted-foreground">
+      <ul className="list-disc pl-5 text-sm text-muted-foreground">
         {cmp.limitations.map((line) => (
           <li key={line}>{line}</li>
         ))}
@@ -312,6 +332,6 @@ function ComparisonRow({
       <Button variant="link" size="sm" className="h-auto self-start p-0" onClick={() => onOpenSession(cmp.session_id)}>
         Open this attempt's feedback
       </Button>
-    </div>
+    </article>
   );
 }

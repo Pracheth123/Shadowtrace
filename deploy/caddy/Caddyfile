@@ -1,0 +1,64 @@
+# /etc/caddy/Caddyfile — HTTPS/WSS termination, static client, API proxy.
+# Replace interview.example.org with your domain (DNS A record → the host's
+# Elastic IP). Caddy obtains and renews the TLS certificate automatically.
+interview.example.org {
+	encode zstd gzip
+
+	# API, WebSocket and health/readiness go to the single uvicorn worker.
+	# WebSocket upgrades are proxied automatically; no read timeout is applied
+	# to an upgraded connection, so a 15-minute interview is not cut off.
+	@backend path /api/* /ws/* /health /ready
+	handle @backend {
+		reverse_proxy 127.0.0.1:8000 {
+			# uvicorn trusts X-Forwarded-For from 127.0.0.1 only (see the unit).
+			header_up X-Forwarded-For {remote_host}
+			transport http {
+				read_timeout 120s
+				write_timeout 120s
+			}
+			# Keep proxied WebSockets open across Caddy config reloads for
+			# up to 20 minutes (longer than MAX_SESSION_SECONDS).
+			stream_close_delay 20m
+		}
+	}
+
+	# Diagnostics are for operators; do not expose them publicly.
+	@diagnostics path /api/diagnostics /api/diagnostics/*
+	respond @diagnostics 404
+
+	# The built React app. Hashed assets are immutable; index.html is not cached.
+	handle {
+		root * /srv/shadowtrace/current/client/dist
+		@assets path /assets/*
+		header @assets Cache-Control "public, max-age=31536000, immutable"
+		header /index.html Cache-Control "no-cache"
+		try_files {path} /index.html
+		file_server
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		Permissions-Policy "camera=(self), microphone=(self), geolocation=()"
+		-Server
+	}
+
+	log {
+		output file /var/log/caddy/shadowtrace-access.log {
+			roll_size 20MiB
+			roll_keep 10
+			roll_keep_for 336h
+		}
+		# Request paths only; bodies, query strings with tokens and headers are not logged.
+		format filter {
+			wrap json
+			fields {
+				request>headers delete
+				request>uri query {
+					delete token
+				}
+			}
+		}
+	}
+}

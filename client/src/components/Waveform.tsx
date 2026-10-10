@@ -22,8 +22,8 @@ import { cn } from "@/lib/utils";
  * for the waveform, the lighter pen tint for peaks. Keep in step with styles.css.
  */
 
-const WAVE_COLOR = "#233c66"; // --pen-700
-const PEAK_COLOR = "#6f86ab"; // --pen-400
+const WAVE_COLOR = "#2451b2"; // --cobalt: the level history is drawn in this colour
+const PEAK_COLOR = "#b8c7ea"; // --pen-200
 
 export type WaveformProps = {
   /** The session's microphone stream. Null before capture starts. */
@@ -122,7 +122,7 @@ export function Waveform({
       <div
         ref={hostRef}
         className={cn(
-          "wave-host min-h-[72px] w-full overflow-hidden rounded-lg border border-border bg-background px-2",
+          "wave-host min-h-[72px] w-full overflow-hidden rounded border border-border bg-[var(--surface-1)] px-2",
           (!active || !stream || muted) && "opacity-50",
         )}
       />
@@ -135,17 +135,19 @@ export function Waveform({
           aria-label={muted ? "Unmute microphone" : "Mute microphone"}
           className={cn(
             "rounded-full border border-border",
-            !muted && active && stream && "animate-pulse-ring bg-secondary text-primary",
+            // A steady ring, not a pulse: it marks an open microphone without
+            // implying anything about the audio itself.
+            !muted && active && stream && "bg-secondary text-primary ring-2 ring-primary/40",
           )}
         >
           {muted ? <MicOffIcon /> : <MicIcon />}
         </Button>
-        <p className="text-xs text-muted-foreground">
+        <p className="text-sm text-muted-foreground">
           {!stream
-            ? "Microphone not started"
+            ? "Microphone not started — nothing is being recorded"
             : muted
               ? "Muted — nothing is being sent"
-              : "Listening"}
+              : "Microphone on — your speech is being transcribed"}
         </p>
       </div>
     </div>

@@ -110,11 +110,21 @@ export function ResultsDashboard({ sessionId, onOpenSession, onOpenPractice, onS
         </TabsPanel>
       </Tabs>
       <div className="flex flex-wrap gap-2">
-        <Button variant="ghost" onClick={onStartAnother}>
+        <Button variant="outline" onClick={onStartAnother}>
           Start another interview
         </Button>
-        <DeleteMyData />
       </div>
+      <section className="danger-zone" aria-labelledby="your-data-heading">
+        <div className="max-w-xl">
+          <h2 id="your-data-heading">Your data</h2>
+          <p>
+            Deleting removes your intakes, transcripts, reports, disputes and practice records from this app and
+            ends this browser&apos;s guest key. Copies held by Groq or Deepgram under their own policies cannot be
+            deleted from here.
+          </p>
+        </div>
+        <DeleteMyData />
+      </section>
     </div>
   );
 }
@@ -188,7 +198,7 @@ function SessionReportView({
   if (!meta || !job) return <Notice text="Loading this session…" busy />;
 
   const practiceBanner = meta.kind === "practice" && meta.practice && (
-    <p className="rounded-md bg-muted px-3 py-2 text-sm">
+    <p className="notice" data-tone="info">
       Practice attempt on <strong>{meta.practice.dimension_label}</strong>
       {meta.practice.coached ? " (coached — you saw a checklist)" : meta.practice.mode === "unaided" ? " (unaided variation)" : ""}.{" "}
       <Button variant="link" size="sm" className="h-auto p-0" onClick={() => onOpenPractice(meta.practice!.practice_id)}>
@@ -241,7 +251,7 @@ function EvaluationProgress({
   const failed = job.rounds.filter((r) => r.state === "failed");
   const waiting = ["finalising", "evaluation_queued", "evaluating", "active"].includes(job.state);
   return (
-    <Card>
+    <Card className="report-section">
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           {waiting && <LoaderCircleIcon className="size-4 animate-spin" />}
@@ -259,10 +269,10 @@ function EvaluationProgress({
       </CardHeader>
       <CardPanel className="flex flex-col gap-3">
         {job.rounds.length > 0 && (
-          <ul className="flex flex-col gap-1 text-sm" aria-live="polite">
+          <ul className="eval-rounds" aria-live="polite">
             {job.rounds.map((round) => (
-              <li key={round.round} className="flex flex-wrap items-baseline gap-2">
-                <span className="font-medium">{round.label}</span>
+              <li key={round.round} className="eval-round" data-state={round.state}>
+                <span className="font-semibold">{round.label}</span>
                 <span className={ROUND_STATE[round.state].tone}>
                   {round.state === "running" && <LoaderCircleIcon className="mr-1 inline size-3 animate-spin" />}
                   {ROUND_STATE[round.state].label}
@@ -273,7 +283,7 @@ function EvaluationProgress({
                 {round.cache_hit && <span className="text-xs text-muted-foreground">(reused, no new model call)</span>}
                 {round.fallback_used && <span className="text-xs text-warning">fallback model {round.model_used}</span>}
                 {round.state === "failed" && (
-                  <span className="w-full text-xs text-destructive">
+                  <span className="w-full text-sm text-destructive">
                     {round.error} {round.recovery}
                   </span>
                 )}
@@ -313,12 +323,10 @@ function EvaluationProgress({
 
 function Notice({ text, busy }: { text: string; busy?: boolean }) {
   return (
-    <Card>
-      <CardPanel className="flex items-center gap-2 pt-5 text-sm text-muted-foreground">
-        {busy && <LoaderCircleIcon className="size-4 animate-spin" />}
-        {text}
-      </CardPanel>
-    </Card>
+    <p className="notice items-center" data-tone={busy ? "info" : "error"} role={busy ? "status" : "alert"}>
+      {busy && <LoaderCircleIcon className="animate-spin" aria-hidden="true" />}
+      {text}
+    </p>
   );
 }
 
@@ -374,31 +382,36 @@ function ReportBody({
 
   return (
     <div className="flex flex-col gap-4">
-      <header className="flex flex-col gap-1">
-        <h1>{isPractice ? "Practice feedback" : "Your feedback"}</h1>
-        <p className="text-sm text-muted-foreground">
+      <header className="report-head">
+        <h2 className="text-3xl">{isPractice ? "Practice feedback" : "Your feedback"}</h2>
+        <p className="meta-line">
           {cfg.target_role} · {roundLabel} · {report.lane === "text" ? "typed" : "spoken"} ·{" "}
           {DIFFICULTY[cfg.intensity] ?? cfg.intensity} difficulty ·{" "}
           {new Date(report.session_started_at || report.created_at).toLocaleString()}
         </p>
-        <p className="text-xs text-muted-foreground">{report.coverage_note}</p>
+        <p className="text-sm text-muted-foreground">{report.coverage_note}</p>
       </header>
 
       {!report.evaluator.is_assessment && (
-        <p className="rounded-md border border-warning px-3 py-2 text-sm">
-          <strong>Development evaluation.</strong> No evaluation model was configured, so
-          this report was produced by a placeholder. It is not an assessment of you.
+        <p className="notice" data-tone="warning">
+          <span><strong>Development evaluation.</strong> No evaluation model was configured, so
+          this report was produced by a placeholder. It is not an assessment of you.</span>
         </p>
       )}
       {meta.interviewer === "deterministic" && (
-        <p className="rounded-md border border-border px-3 py-2 text-sm text-muted-foreground">
+        <p className="notice" data-tone="info">
           The questions in this session came from the plan-based interviewer, not an AI model.
         </p>
       )}
+      <p className="text-sm text-muted-foreground">
+        How to read this: each finding shows the question, <strong className="text-foreground">your own words</strong>{" "}
+        (quoted from the transcript), the evaluator&apos;s <strong className="text-foreground">interpretation</strong> — which
+        can be wrong and can be challenged — and one <strong className="text-foreground">practice step</strong>.
+      </p>
 
-      <Card>
+      <Card className="report-section">
         <CardHeader>
-          <CardTitle className="text-base">What to practise first</CardTitle>
+          <CardTitle className="text-lg">What to practise first</CardTitle>
           <CardDescription>
             {gaps.length === 0
               ? "No specific gaps were identified with quoted evidence in this session."
@@ -437,11 +450,11 @@ function ReportBody({
         <RoundCard key={round.round} round={round} contested={report.contested?.dimensions ?? []} />
       ))}
 
-      <Card>
+      <Card className="report-section">
         <CardHeader>
-          <CardTitle className="flex items-baseline gap-2">
-            Overall indicator
-            <span className="text-2xl tabular-nums">
+          <CardTitle className="flex flex-wrap items-baseline gap-3 text-lg">
+            Overall indicator <span className="meta-label">experimental</span>
+            <span className="score-figure tabular-nums">
               {report.overall.score == null ? "Not scored" : `${percent(report.overall.score)}/100`}
             </span>
           </CardTitle>
@@ -452,7 +465,8 @@ function ReportBody({
             {report.overall.disclaimer} Read the dimension levels and the answers behind them first; this
             number only summarises them.
           </p>
-          <div className="flex flex-wrap gap-2">
+          <p className="meta-label mt-2">Downloads</p>
+          <div className="downloads">
             <TranscriptButton sessionId={report.session_id} />
             <Button
               variant="outline"
@@ -476,9 +490,9 @@ function ReportBody({
       {(report.revisions?.length ?? 0) > 0 && <RevisionsCard report={report} />}
 
       {report.disagreements.length > 0 && (
-        <Card>
+        <Card className="report-section">
           <CardHeader>
-            <CardTitle className="text-base">Where the evaluators disagreed</CardTitle>
+            <CardTitle className="text-lg">Where the evaluators disagreed</CardTitle>
             <CardDescription>Both positions are shown; neither is averaged away.</CardDescription>
           </CardHeader>
           <CardPanel className="flex flex-col gap-3 text-sm">
@@ -500,9 +514,9 @@ function ReportBody({
         </Card>
       )}
 
-      <Card>
+      <Card className="report-section">
         <CardHeader>
-          <CardTitle className="text-base">Delivery</CardTitle>
+          <CardTitle className="text-lg">Delivery</CardTitle>
           <CardDescription>{report.delivery.note}</CardDescription>
         </CardHeader>
         <CardPanel className="flex flex-col gap-1 text-sm">
@@ -518,9 +532,9 @@ function ReportBody({
 
       <RecommendationList title="More practice ideas" items={report.recommendations} contested={report.contested?.findings ?? []} />
 
-      <Card>
+      <Card className="report-section">
         <CardHeader>
-          <CardTitle className="text-base">Limits of this report</CardTitle>
+          <CardTitle className="text-lg">Limits of this report</CardTitle>
         </CardHeader>
         <CardPanel>
           <ul className="flex list-disc flex-col gap-1 pl-5 text-sm text-muted-foreground">
@@ -551,49 +565,56 @@ function FindingCard({
   const canPractise =
     report.session_kind !== "practice" && finding.eligible_for_practice && !disputed && Boolean(finding.finding_id);
   return (
-    <article className="flex flex-col gap-1.5 border-b border-border pb-4 text-sm last:border-b-0">
-      <p className="flex flex-wrap items-center gap-2 font-medium">
-        <Badge variant={finding.polarity === "gap" ? "outline" : "secondary"} size="sm">
+    <article className="finding" data-disputed={disputed ? "true" : "false"}>
+      <div className="finding-head">
+        <span className="finding-kind" data-kind={finding.polarity}>
           {finding.polarity === "gap" ? "to practise" : "strength"}
-        </Badge>
-        {finding.dimension_label}
-        <span className="text-xs font-normal text-muted-foreground">
+        </span>
+        <h4>{finding.dimension_label}</h4>
+        <span className="text-sm text-muted-foreground">
           {finding.perspective_label} round · {finding.confidence} confidence
         </span>
         {dispute && (
-          <Badge variant="muted" size="sm">
+          <span className={dispute.status === "withdrawn" ? "finding-kind" : "dispute-stamp"}>
             {DISPUTE_STATUS[dispute.status]}
-          </Badge>
+          </span>
         )}
-      </p>
+      </div>
       {finding.question && (
-        <p className="text-muted-foreground">
-          <span className="font-medium text-foreground">Question:</span> {finding.question}
-        </p>
+        <div className="finding-zone">
+          <span className="meta-label">The question</span>
+          <p className="finding-question">{finding.question}</p>
+        </div>
       )}
-      <div>
-        <span className="font-medium">Your answer:</span>
-        <Quote text={finding.quote} turn={finding.turn_id} />
-        <p className="text-xs text-muted-foreground">
+      <div className="finding-zone">
+        <span className="meta-label">Your words</span>
+        <blockquote className="finding-quote">
+          “{finding.quote}”{finding.turn_id && <span className="turn-ref">turn {finding.turn_id.slice(0, 8)}</span>}
+        </blockquote>
+        <p className="finding-provenance">
           {finding.source_match !== false
             ? "Quote found in your answer — this checks where the words came from, not whether the judgement is right."
             : "This quote could not be located in your answer."}
         </p>
       </div>
-      <p>
-        <span className="font-medium">Why:</span> {finding.explanation}
-      </p>
-      {finding.limitation && (
-        <p className="text-muted-foreground">
-          <span className="font-medium text-foreground">Limits:</span> {finding.limitation}
-        </p>
-      )}
+      <div className="finding-zone">
+        <span className="meta-label">Interpretation · can be challenged</span>
+        <div className="finding-interpretation">
+          <p>{finding.explanation}</p>
+          {finding.limitation && (
+            <p className="finding-limit">
+              <span className="font-semibold text-foreground">Limits:</span> {finding.limitation}
+            </p>
+          )}
+        </div>
+      </div>
       {finding.practice && (
-        <p>
-          <span className="font-medium">Next step:</span> {finding.practice}
-        </p>
+        <div className="finding-zone">
+          <span className="meta-label">Next step</span>
+          <p className="finding-practice">{finding.practice}</p>
+        </div>
       )}
-      <div className="mt-1 flex flex-wrap gap-2">
+      <div className="finding-actions">
         {canPractise && <PractiseButton finding={finding} report={report} onOpenPractice={onOpenPractice} />}
         {finding.finding_id && (
           <DisputeControl finding={finding} report={report} dispute={dispute} onChange={onChange} />
@@ -762,9 +783,9 @@ function DisputeControl({
 
 function RevisionsCard({ report }: { report: SessionReport }) {
   return (
-    <Card>
+    <Card className="report-section">
       <CardHeader>
-        <CardTitle className="text-base">Revised assessments after your corrections</CardTitle>
+        <CardTitle className="text-lg">Revised assessments after your corrections</CardTitle>
         <CardDescription>
           Automated re-checks by the same evaluator with your correction as context. They are not
           independent confirmation either way, and they never replace the original report.
@@ -807,7 +828,7 @@ function RoundCard({ round, contested = [] }: { round: RoundResult; contested?: 
           ? "The answers in this round were too short to assess, so nothing in it was scored."
           : "This round had no answers to assess.";
   return (
-    <Card>
+    <Card className="report-section">
       <CardHeader>
         <CardTitle className="flex flex-wrap items-center gap-2 text-base">
           {round.label}
@@ -819,7 +840,7 @@ function RoundCard({ round, contested = [] }: { round: RoundResult; contested?: 
         <CardDescription>{status}</CardDescription>
       </CardHeader>
       <CardPanel className="flex flex-col gap-3">
-        <table className="w-full text-sm">
+        <table className="round-table w-full text-sm">
           <thead>
             <tr className="text-left text-xs text-muted-foreground">
               <th className="py-1 pr-2 font-normal">Dimension</th>
@@ -862,9 +883,9 @@ function RoundCard({ round, contested = [] }: { round: RoundResult; contested?: 
 function ClaimsCard({ claims, meanings }: { claims: ClaimFinding[]; meanings: Record<string, string> }) {
   if (claims.length === 0) return null;
   return (
-    <Card>
+    <Card className="report-section">
       <CardHeader>
-        <CardTitle className="text-base">Statements from your background</CardTitle>
+        <CardTitle className="text-lg">Statements from your background</CardTitle>
         <CardDescription>
           How each statement came across under questioning in this session. Repository or work-sample
           material shows that content exists, not who wrote it, and an unclear answer does not establish
@@ -902,7 +923,7 @@ function ClaimsCard({ claims, meanings }: { claims: ClaimFinding[]; meanings: Re
 
 function Quote({ text, turn }: { text: string; turn?: string }) {
   return (
-    <blockquote className="mt-1 border-l-2 border-secondary pl-3 text-sm text-muted-foreground">
+    <blockquote className="quote-inline">
       “{text}” {turn && <span className="text-xs">({turn.slice(0, 8)})</span>}
     </blockquote>
   );
@@ -923,9 +944,9 @@ function RecommendationList({
     (item) => !item.evidence.some((ev) => (ev as { finding_id?: string }).finding_id && contested.includes((ev as { finding_id?: string }).finding_id!)),
   );
   return (
-    <Card>
+    <Card className="report-section">
       <CardHeader>
-        <CardTitle className="text-base">{title}</CardTitle>
+        <CardTitle className="text-lg">{title}</CardTitle>
         {note && <CardDescription>{note}</CardDescription>}
       </CardHeader>
       <CardPanel>
@@ -935,7 +956,7 @@ function RecommendationList({
           <ol className="flex flex-col gap-3">
             {visible.map((item, index) => (
               <li key={`${item.title}-${index}`} className="flex gap-3 text-sm">
-                <Badge variant="primary" className="mt-0.5 shrink-0">{index + 1}</Badge>
+                <span className="meta-label mt-0.5 shrink-0">{String(index + 1).padStart(2, "0")}</span>
                 <div>
                   <p className="font-medium">{item.title}</p>
                   <p className="text-muted-foreground">{item.why}</p>
@@ -970,9 +991,9 @@ const ROW_STATUS: Record<string, InterviewRow["status"]> = {
 function PracticeList({ items, onOpenPractice }: { items: Practice[]; onOpenPractice: (id: string) => void }) {
   if (items.length === 0) return null;
   return (
-    <Card>
+    <Card className="report-section">
       <CardHeader>
-        <CardTitle className="text-base">Targeted practice</CardTitle>
+        <CardTitle className="text-lg">Targeted practice</CardTitle>
         <CardDescription>One gap at a time, compared on that dimension only. Never on an interview trend.</CardDescription>
       </CardHeader>
       <CardPanel>
@@ -1021,16 +1042,16 @@ function HistoryView({
   }));
   return (
     <div className="flex flex-col gap-4">
-      <Card>
+      <Card className="report-section">
         <CardPanel className="pt-5">
           <InterviewHistory rows={rows} onViewFeedback={(row) => onOpenSession(row.id)} />
         </CardPanel>
       </Card>
       <PracticeList items={history.practice ?? []} onOpenPractice={onOpenPractice} />
       {history.comparisons.map((cmp) => (
-        <Card key={cmp.latest_session_id}>
+        <Card key={cmp.latest_session_id} className="report-section">
           <CardHeader>
-            <CardTitle className="text-base">
+            <CardTitle className="text-lg">
               {cmp.kind === "trend" ? `Trend across ${cmp.sessions} sessions` : "Change since your previous comparable session"}
             </CardTitle>
             <CardDescription>{cmp.label}</CardDescription>
@@ -1059,9 +1080,9 @@ function HistoryView({
         </p>
       )}
       {history.recurring_gaps.length > 0 && (
-        <Card>
+        <Card className="report-section">
           <CardHeader>
-            <CardTitle className="text-base">Recurring gaps</CardTitle>
+            <CardTitle className="text-lg">Recurring gaps</CardTitle>
             <CardDescription>Disputed findings are not counted.</CardDescription>
           </CardHeader>
           <CardPanel>
@@ -1096,9 +1117,9 @@ function PlanView({
   return (
     <div className="flex flex-col gap-4">
       {(plan.practice?.length ?? 0) > 0 && (
-        <Card>
+        <Card className="report-section">
           <CardHeader>
-            <CardTitle className="text-base">Your targeted practice</CardTitle>
+            <CardTitle className="text-lg">Your targeted practice</CardTitle>
           </CardHeader>
           <CardPanel>
             <ul className="flex flex-col gap-2 text-sm">
@@ -1156,8 +1177,8 @@ function DeleteMyData() {
     }
   };
   return armed ? (
-    <div className="flex flex-wrap items-center gap-2">
-      <CircleAlertIcon className="size-4 text-destructive" />
+    <div className="flex max-w-xl flex-wrap items-center gap-2" role="group" aria-label="Confirm deletion">
+      <CircleAlertIcon className="size-4 text-destructive" aria-hidden="true" />
       <span className="text-sm">
         Delete every intake, transcript, report, dispute and practice record? Anything currently being
         evaluated is cancelled first. Copies held by Groq or Deepgram under their own policies cannot be
@@ -1171,7 +1192,7 @@ function DeleteMyData() {
       </Button>
     </div>
   ) : (
-    <Button variant="ghost" className="text-destructive" onClick={() => setArmed(true)}>
+    <Button variant="outline" className="border-destructive/50 text-destructive hover:bg-destructive/10 hover:text-destructive" onClick={() => setArmed(true)}>
       Delete my data
     </Button>
   );

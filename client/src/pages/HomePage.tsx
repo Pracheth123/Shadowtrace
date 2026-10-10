@@ -10,8 +10,8 @@ import { ResumeScrollStory } from "@/components/home/ResumeScrollStory";
 const faqs = [
   ["Do I need a GitHub repository?", "No. Start with a resume or a few sentences about your experience. A public repository or work sample is optional, and the interview supports technical and nontechnical roles."],
   ["Can I type instead of speaking?", "Yes. Choose typing during setup, or switch to typing during a voice session. Spoken delivery is not assessed in the text lane."],
-  ["What happens to my background and answers?", "Before uploading, setup explains which data goes to Groq and Deepgram and asks for your consent. Your private guest key stays in this browser. You can delete your data from the feedback workspace; copies held by providers follow their own policies."],
-  ["Is this a hiring assessment?", "This is a practice tool. Scores are experimental coaching indicators, not hiring predictions. Feedback includes evidence and limits, and you can dispute a finding or practise a specific gap."],
+  ["What happens to my background and answers?", "Before anything is uploaded, setup explains which data goes to Groq (text) and Deepgram (voice) and asks for your consent. Your private guest key is kept in this browser; your intake, transcripts and feedback are stored on this app’s server. They are deleted when you choose Delete my data, or automatically after a period without activity (30 days unless the operator sets otherwise). Copies held by those providers follow their own policies."],
+  ["Is this a hiring assessment?", "No. This is a practice tool. Scores are experimental coaching indicators, not hiring predictions. Feedback quotes your own answers, can be wrong, and says what it cannot tell you; you can challenge a finding or practise a specific gap."],
 ];
 
 const steps = [
@@ -31,7 +31,7 @@ export function HomePage({ onStart, onHistory }: { onStart: () => void; onHistor
     <LazyMotion features={domAnimation} strict>
       <MotionConfig reducedMotion="user">
         <div className="home-page">
-          <header className="site-header">
+          <header className="site-header on-charcoal">
             <div className="site-header-inner">
               <a href="#" aria-label="Shadowtrace home"><Brand /></a>
               <nav aria-label="Main navigation" className="home-nav">
@@ -58,7 +58,7 @@ export function HomePage({ onStart, onHistory }: { onStart: () => void; onHistor
               </div>
             </>} />
 
-            <section className="role-strip" aria-label="Supported professions"><div className="content-width"><p>Good stories aren’t just for engineers.</p><ul>{["Software", "Hardware", "Sales", "Marketing", "Operations", "Finance"].map((role) => <li key={role}>{role}</li>)}</ul></div></section>
+            <section className="role-strip on-charcoal" aria-label="Supported professions"><div className="content-width"><p>Good stories aren’t just for engineers.</p><ul>{["Software", "Hardware", "Sales", "Marketing", "Operations", "Finance"].map((role) => <li key={role}>{role}</li>)}</ul></div></section>
 
             <section id="how-it-works" className="how-section content-width" aria-labelledby="how-heading">
               <Reveal className="section-intro"><p className="eyebrow">FROM EXPERIENCE TO A BETTER ANSWER</p><h2 id="how-heading" tabIndex={-1} className="outline-none">A little preparation.<br /><em>A more useful conversation.</em></h2><p>Bring your experience. Leave with one clear thing to practise next.</p></Reveal>
@@ -77,9 +77,9 @@ export function HomePage({ onStart, onHistory }: { onStart: () => void; onHistor
               <Reveal className="faq-list" delay={0.08}>{faqs.map(([question, answer]) => <details key={question}><summary>{question}<ChevronDownIcon size={18} aria-hidden="true" /></summary><p>{answer}</p></details>)}</Reveal>
             </section>
 
-            <section className="closing-section"><Reveal className="content-width"><p className="eyebrow">READY WHEN YOU ARE</p><h2>Your next interview<br />starts with <em>your story.</em></h2><Button size="lg" className="arrow-cta" onClick={onStart}>Let’s practise <ArrowRightIcon /></Button><p>For practice. Feedback is guidance, not a hiring prediction.</p></Reveal></section>
+            <section className="closing-section on-charcoal"><Reveal className="content-width"><p className="eyebrow">READY WHEN YOU ARE</p><h2>Your next interview<br />starts with <em>your story.</em></h2><Button size="lg" className="arrow-cta" onClick={onStart}>Let’s practise <ArrowRightIcon /></Button><p>For practice. Feedback is guidance, not a hiring prediction.</p></Reveal></section>
           </main>
-          <footer className="site-footer content-width"><Brand /><span>Interview practice, grounded in you.</span><button className="arrow-cta" onClick={onHistory}>Your history <ArrowRightIcon size={14} /></button></footer>
+          <div className="site-footer-band on-charcoal"><footer className="site-footer content-width"><Brand /><span>Interview practice, grounded in you.</span><button className="arrow-cta" onClick={onHistory}>Your history <ArrowRightIcon size={14} /></button></footer></div>
         </div>
       </MotionConfig>
     </LazyMotion>

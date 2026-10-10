@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import {
   Card,
   CardDescription,
-  CardFooter,
+
   CardHeader,
   CardPanel,
   CardTitle,
@@ -38,6 +38,15 @@ import {
   type RoundChoice,
   type Seniority,
 } from "@/lib/api";
+import { isCaptureSupported } from "@/lib/audio-capture";
+import {
+  canSpeak,
+  readMicPermission,
+  voiceDeveloperNote,
+  voiceMessage,
+  voiceState,
+  type MicPermission,
+} from "@/lib/voice-availability";
 import {
   segmentedControlItemVariants,
   segmentedControlRootClassName,
@@ -107,18 +116,47 @@ export function SetupPage({ onStart, onOpenHistory }: SetupPageProps) {
   const [consent, setConsent] = useState(false);
   const pollRef = useRef<number | null>(null);
 
-  useEffect(() => {
-    void ensureGuest().catch(() => undefined);
+  const [micPermission, setMicPermission] = useState<MicPermission>("unknown");
+
+  const loadHealth = () => {
+    setHealth(null);
+    setHealthFailed(false);
     fetch(`${HTTP_BASE}/health`)
       .then((r) => { if (!r.ok) throw new Error("Service unavailable"); return r.json(); })
       .then(setHealth)
       .catch(() => { setHealth(null); setHealthFailed(true); });
+  };
+
+  useEffect(() => {
+    void ensureGuest().catch(() => undefined);
+    loadHealth();
+    // Read (never request) the microphone permission, and follow changes made
+    // in the browser's site settings while this page is open.
+    let status: PermissionStatus | null = null;
+    const update = () => status && setMicPermission(status.state as MicPermission);
+    void readMicPermission().then((result) => {
+      setMicPermission(result.state);
+      status = result.status;
+      status?.addEventListener?.("change", update);
+    });
     return () => {
       if (pollRef.current) window.clearTimeout(pollRef.current);
+      status?.removeEventListener?.("change", update);
     };
   }, []);
 
-  const voiceAvailable = health?.providers?.voice === "deepgram";
+  const voice = voiceState(health, healthFailed, {
+    captureSupported: isCaptureSupported(),
+    secureContext: window.isSecureContext,
+    micPermission,
+  });
+  const voiceAvailable = canSpeak(voice);
+  const developerNote = import.meta.env.DEV ? voiceDeveloperNote(voice) : null;
+
+  // Speak is never left selected once it cannot work; the candidate sees why.
+  useEffect(() => {
+    if (!voiceAvailable && lane === "voice") setLane("text");
+  }, [voiceAvailable, lane]);
 
   const poll = (intakeId: string) => {
     api<IntakeResult>(`/api/intake/${intakeId}`)
@@ -197,25 +235,23 @@ export function SetupPage({ onStart, onOpenHistory }: SetupPageProps) {
     const index = status?.stage_index ?? 0;
     const count = status?.stage_count ?? 5;
     return (
-      <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <LoaderCircleIcon className="size-4 animate-spin" />
-              Preparing your interview
-            </CardTitle>
-            <CardDescription>
-              {STAGE_LABEL[status?.state ?? "queued"] ?? status?.state}
-            </CardDescription>
-          </CardHeader>
-          <CardPanel>
-            <Progress value={index} max={count} label={`Step ${index} of ${count}`} />
-            <p className="mt-2 text-xs text-muted-foreground">
-              Your files are read as data. A repository is read, never run, and is
-              deleted after its README and manifests are excerpted.
-            </p>
-          </CardPanel>
-        </Card>
+      <div className="w-full">
+        <JourneySteps current={1} />
+        <section className="process-card" aria-labelledby="processing-heading">
+          <p className="eyebrow">Step {index} of {count}</p>
+          <h1 id="processing-heading" className="mt-3 flex items-center gap-3 text-3xl">
+            <LoaderCircleIcon className="size-6 animate-spin text-primary" aria-hidden="true" />
+            Preparing your interview
+          </h1>
+          <p className="mt-2 text-base text-muted-foreground" aria-live="polite">
+            {STAGE_LABEL[status?.state ?? "queued"] ?? status?.state}
+          </p>
+          <Progress className="mt-5" value={index} max={count} label={`Step ${index} of ${count}`} />
+          <p className="mt-4 text-sm text-muted-foreground">
+            Your files are read as data. A repository is read, never run, and is
+            deleted after its README and manifests are excerpted.
+          </p>
+        </section>
       </div>
     );
   }
@@ -243,7 +279,7 @@ export function SetupPage({ onStart, onOpenHistory }: SetupPageProps) {
         </header>
 
         {warnings.map((warning) => (
-          <p key={warning} className="rounded-md bg-muted px-3 py-2 text-sm">{warning}</p>
+          <p key={warning} className="notice" data-tone="warning">{warning}</p>
         ))}
 
         <StatementReview
@@ -263,9 +299,9 @@ export function SetupPage({ onStart, onOpenHistory }: SetupPageProps) {
         />
 
         {fit && fit.required.length > 0 && (
-          <Card>
+          <Card className="report-section">
             <CardHeader>
-              <CardTitle className="text-base">Document overlap with the job description</CardTitle>
+              <CardTitle className="text-lg">Document overlap with the job description</CardTitle>
               <CardDescription>
                 Which job-description terms also appear in the documents you supplied. This is
                 document overlap only — it is not a measure of ability, and a term missing from
@@ -279,17 +315,17 @@ export function SetupPage({ onStart, onOpenHistory }: SetupPageProps) {
           </Card>
         )}
 
-        <Card>
+        <Card className="report-section">
           <CardHeader>
-            <CardTitle className="text-base">How to prepare</CardTitle>
+            <CardTitle className="text-lg">How to prepare</CardTitle>
           </CardHeader>
           <CardPanel>
             <ol className="flex flex-col gap-3">
               {prep.map((item, index) => (
                 <li key={item.id} className="flex gap-3">
-                  <Badge variant="primary" className="mt-0.5 shrink-0">{index + 1}</Badge>
+                  <span className="meta-label mt-0.5 shrink-0">{String(index + 1).padStart(2, "0")}</span>
                   <div className="text-sm">
-                    <p className="font-medium">{item.title}</p>
+                    <p className="font-semibold">{item.title}</p>
                     <p className="text-muted-foreground">{item.detail}</p>
                     <p>{item.action}</p>
                     {item.evidence.map((ev, i) => (
@@ -318,11 +354,12 @@ export function SetupPage({ onStart, onOpenHistory }: SetupPageProps) {
       </header>
       <div className="provider-status" role="status">
         <ShieldCheckIcon aria-hidden="true" />
-        <p>{health === null ? healthFailed ? "The interview service is unavailable. Check that the backend is running, then reload this page." : "Connecting to the interview service…" : health.providers?.interviewer === "groq" ? <><strong>Interview service configured.</strong> {voiceAvailable ? "Voice and typing are configured. Provider access is verified when used." : "Typing is configured; voice is currently unavailable."}</> : <><strong>Development mode.</strong> Questions follow a fixed plan. Feedback is a placeholder, not an AI assessment. {voiceAvailable ? "Speech is configured." : "Use typing for this preview."}</>}</p>
+        <p>{health === null ? healthFailed ? "The interview service can’t be reached right now. Check again in a moment, or reload this page." : "Connecting to the interview service…" : health.providers?.interviewer === "groq" ? <><strong>Interview service configured.</strong> {voiceAvailable ? "Voice and typing are configured. Provider access is verified when used." : "Typing is available; voice is currently unavailable."}</> : <><strong>Development mode.</strong> Questions follow a fixed plan. Feedback is a placeholder, not an AI assessment. {voiceAvailable ? "Speech is configured." : "Use typing for this preview."}</>}</p>
+        {healthFailed && <Button type="button" variant="outline" size="sm" onClick={loadHealth}>Check again</Button>}
       </div>
+      {developerNote && <p className="dev-note" data-testid="voice-dev-note"><strong>Developer:</strong> {developerNote}</p>}
       <div className="setup-layout">
-      <Card>
-        <CardPanel className="p-0">
+      <div className="setup-sheet">
           <Form className="setup-form w-full" onSubmit={submit}>
             <section className="setup-section" aria-labelledby="background-heading">
               <SectionHeading number="01" id="background-heading" title="Your experience" description="A resume, a few sentences, or both." />
@@ -369,6 +406,9 @@ export function SetupPage({ onStart, onOpenHistory }: SetupPageProps) {
               />
               <FieldDescription>
                 Picks the domain specialist's questions and rubric.
+                {family !== "software" && family !== "sales" && (
+                  <> Software and Sales are the most tested journeys; this profession’s questions and feedback have had less review.</>
+                )}
               </FieldDescription>
             </Field>
 
@@ -405,7 +445,7 @@ export function SetupPage({ onStart, onOpenHistory }: SetupPageProps) {
                 onValueChange={(next) => setLane(next as Lane)}
                 name="lane"
               >
-                <RadioPrimitive.Root className={itemClassName} value="voice" disabled={!voiceAvailable}>
+                <RadioPrimitive.Root className={itemClassName} value="voice" disabled={!voiceAvailable} aria-describedby="voice-status">
                   Speak
                 </RadioPrimitive.Root>
                 <RadioPrimitive.Root className={itemClassName} value="text">
@@ -415,10 +455,15 @@ export function SetupPage({ onStart, onOpenHistory }: SetupPageProps) {
               <FieldDescription>
                 {lane === "text"
                   ? "Typing is fine. Spoken delivery is not assessed or scored."
-                  : voiceAvailable
-                    ? "You will need microphone access. You can switch to typing if voice fails."
-                    : "Voice is unavailable right now. You can prepare and complete the interview by typing."}
+                  : "You will need microphone access. You can switch to typing if voice fails."}
               </FieldDescription>
+              {/* Shown whichever lane is selected, so a disabled Speak always says why. */}
+              <p id="voice-status" className="voice-status" data-voice-state={voice.kind} aria-live="polite">
+                {voiceMessage(voice)}
+                {voice.kind === "unreachable" && (
+                  <> <button type="button" className="voice-status-action" onClick={loadHealth}>Check again</button></>
+                )}
+              </p>
             </Field>
 
             <Field>
@@ -501,11 +546,12 @@ export function SetupPage({ onStart, onOpenHistory }: SetupPageProps) {
             />
 
             {error && (
-              <div role="alert" className="flex gap-2 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                <CircleAlertIcon className="mt-0.5 size-4 shrink-0" />
+              <div role="alert" className="notice" data-tone="error">
+                <CircleAlertIcon aria-hidden="true" />
                 <div>
-                  <p>{error.message}</p>
-                  {error.recovery && <p className="text-xs">{error.recovery}</p>}
+                  <p className="font-medium">{error.message}</p>
+                  {error.recovery && <p className="text-sm">{error.recovery}</p>}
+                  <p className="text-sm">Your entries are kept; fix this and submit again.</p>
                 </div>
               </div>
             )}
@@ -515,18 +561,14 @@ export function SetupPage({ onStart, onOpenHistory }: SetupPageProps) {
             </Button>
             </div>
           </Form>
-        </CardPanel>
-
-        <CardFooter>
-          <div className="flex gap-1.5 text-xs text-muted-foreground">
-            <CircleAlertIcon className="mt-px size-3 shrink-0" />
+          <div className="setup-footnote">
+            <CircleAlertIcon aria-hidden="true" />
             <p>
               Practice only — nothing here screens or ranks you. Scores are experimental coaching
               indicators, not hiring predictions or judgements of truth.
             </p>
           </div>
-        </CardFooter>
-      </Card>
+      </div>
       <aside className="setup-summary" aria-label="Your interview summary">
         <p className="eyebrow">YOUR PRACTICE, AT A GLANCE</p>
         <h2>{targetRole.trim() || "Your next conversation"}</h2>
@@ -539,8 +581,8 @@ export function SetupPage({ onStart, onOpenHistory }: SetupPageProps) {
         <ol className="summary-rounds" aria-label="Selected rounds">
           {(round === "full" ? ROUNDS.filter((item) => item.value !== "full") : ROUNDS.filter((item) => item.value === round)).map((item, index) => <li key={item.value}><span>{String(index + 1).padStart(2, "0")}</span>{item.label}</li>)}
         </ol>
-        <p>You’ll review the statements extracted from your background before the interview begins. Nothing is uploaded until you confirm and continue.</p>
-        <Button variant="link" size="sm" className="mt-3 p-0" onClick={onOpenHistory}>Return to your history <ArrowRightIcon /></Button>
+        <p>You’ll review the statements extracted from your background before the interview begins. Nothing is sent until you agree to the processing and choose Prepare my interview.</p>
+        <Button variant="link" size="sm" className="summary-link" onClick={onOpenHistory}>Return to your history <ArrowRightIcon /></Button>
       </aside>
       </div>
     </div>
@@ -569,12 +611,12 @@ function ConsentBlock({
   retentionDays: number;
 }) {
   return (
-    <div className="flex flex-col gap-2 rounded-md border border-border px-3 py-3 text-xs text-muted-foreground">
-      <p className="text-sm font-medium text-foreground">Your data, with your permission</p>
-      <p>Background and answers are processed by Groq; voice uses Deepgram. Your guest key is saved only in this browser, with no recovery. {retentionDays > 0 ? `App data is deleted after ${retentionDays} days without activity.` : "App data is kept until you delete it."}</p>
+    <div className="consent-block">
+      <p>Your data, with your permission</p>
+      <p>Background and answers are processed by Groq; voice uses Deepgram. Your guest key is saved only in this browser, with no recovery. Your intake, transcripts and feedback are stored on this app’s server: {retentionDays > 0 ? `they are deleted after ${retentionDays} days without activity, or when you delete them.` : "they are kept until you delete them."}</p>
       <details>
-      <summary className="cursor-pointer py-2 font-medium text-primary">Read the processing and retention details</summary>
-      <ul className="flex list-disc flex-col gap-1 pl-4">
+      <summary>Read the processing and retention details</summary>
+      <ul className="flex list-disc flex-col gap-1 pl-4 text-sm">
         <li>
           Text from your resume, background, job description and answers is sent to <strong>Groq</strong> (an
           external AI provider) to run the interviewer and produce feedback.
@@ -598,10 +640,9 @@ function ConsentBlock({
         </li>
       </ul>
       </details>
-      <label className="flex items-start gap-2 text-sm text-foreground">
+      <label>
         <input
           type="checkbox"
-          className="mt-1"
           checked={checked}
           onChange={(event) => onChange(event.target.checked)}
         />
@@ -677,18 +718,19 @@ function StatementReview({
 
   return (
     <>
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Check what the interviewers will ask about</CardTitle>
-          <CardDescription>
-            Each statement is shown where it came from. Keep it, correct what you meant, or exclude it. A
+      <section className="flex flex-col gap-4" aria-labelledby="review-heading">
+        <div>
+          <h2 id="review-heading" className="text-2xl">Check what the interviewers will ask about</h2>
+          <p className="mt-2 max-w-3xl text-[15px] leading-relaxed text-muted-foreground">
+            Each statement was extracted automatically and is shown where it came from. Extraction can be
+            wrong, so nothing here is treated as verified. Keep it, correct what you meant, or exclude it. A
             correction is used as your own statement — it is never presented as a quote from your file, and
             the original stays on record. {result.evidence_note}
-          </CardDescription>
-        </CardHeader>
-        <CardPanel className="flex flex-col gap-4">
+          </p>
+        </div>
+        <div className="evidence-list">
           {claims.length === 0 && (
-            <p className="text-sm text-muted-foreground">
+            <p className="notice" data-tone="info">
               No specific statements were found. Follow-ups will anchor on what you say.
             </p>
           )}
@@ -696,16 +738,22 @@ function StatementReview({
             const decision = decisions[claim.id];
             const span = claim.source_span;
             return (
-              <div key={claim.id} className="flex flex-col gap-2 border-b border-border pb-3 text-sm last:border-b-0">
-                <p className="flex flex-wrap items-center gap-2">
-                  <span className={decision.action === "exclude" ? "line-through text-muted-foreground" : ""}>“{claim.text}”</span>
-                  <Badge variant="muted" size="sm">
+              <article key={claim.id} className="evidence-slip" data-action={decision.action}>
+                <div className="evidence-slip-head">
+                  <span className="meta-label">Extracted statement · unverified</span>
+                  <Badge variant="outline" size="sm" className="whitespace-normal">
                     {EVIDENCE_LABEL[claim.evidence_kind] ?? claim.evidence_kind}
                     {claim.evidence_kind === "repository" ? ` · ${claim.source_path}` : ""}
                   </Badge>
-                </p>
-                <p className="rounded-md bg-muted px-2 py-1 text-xs text-muted-foreground">
-                  Source ({claim.source}):{" "}
+                  {decision.action !== "keep" && (
+                    <span className="meta-label text-foreground">
+                      {decision.action === "exclude" ? "Excluded — won’t be asked about" : "Corrected by you"}
+                    </span>
+                  )}
+                </div>
+                <p className="evidence-statement">“{claim.text}”</p>
+                <p className="evidence-source">
+                  <span className="meta-label mr-1">Source · {claim.source}</span>{" "}
                   {span?.found ? (
                     <>
                       …{span.before}
@@ -716,12 +764,12 @@ function StatementReview({
                     <>“{claim.quote ?? claim.text}”</>
                   )}
                 </p>
-                <div className="flex flex-wrap gap-1" role="group" aria-label="What to do with this statement">
+                <div className="evidence-actions" role="group" aria-label="What to do with this statement">
                   {(["keep", "edit", "exclude"] as ReviewAction[]).map((action) => (
                     <Button
                       key={action}
                       size="sm"
-                      variant={decision.action === action ? "secondary" : "ghost"}
+                      variant="outline"
                       aria-pressed={decision.action === action}
                       onClick={() => set(claim.id, { action })}
                     >
@@ -738,21 +786,21 @@ function StatementReview({
                       onChange={(event) => set(claim.id, { text: event.target.value })}
                       aria-label="What you meant"
                     />
-                    <p className="text-xs text-muted-foreground">
+                    <p className="text-sm text-muted-foreground">
                       Your correction — used as your own statement, not as a quote from your file. Only write what
                       is true.
                     </p>
                   </div>
                 )}
-              </div>
+              </article>
             );
           })}
-        </CardPanel>
-      </Card>
+        </div>
+      </section>
 
-      <Card>
+      <Card className="report-section">
         <CardHeader>
-          <CardTitle className="text-base">Practice focus (optional)</CardTitle>
+          <CardTitle className="text-lg">Practice focus (optional)</CardTitle>
           <CardDescription>
             Steers follow-up questions toward one area. Every core question is still asked, and time and
             follow-up limits are unchanged.
@@ -777,10 +825,14 @@ function StatementReview({
       </Card>
 
       {problem && (
-        <p role="alert" className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">{problem}</p>
+        <p role="alert" className="notice" data-tone="error">{problem} Your choices are kept; try saving again.</p>
       )}
 
-      <div className="flex flex-wrap gap-2">
+      <div className="review-actions on-charcoal">
+        <p className="mr-auto">
+          {Object.values(decisions).filter((d) => d.action !== "exclude").length} of {claims.length} statement
+          {claims.length === 1 ? "" : "s"} will be used.
+        </p>
         <Button
           size="lg"
           disabled={saving}
@@ -790,10 +842,10 @@ function StatementReview({
         >
           {saving ? "Saving…" : "Save and start the interview"}
         </Button>
-        <Button variant="outline" disabled={saving} onClick={() => void save()}>
+        <Button variant="outline" className="border-[var(--charcoal-line)] bg-transparent text-[var(--on-charcoal)] hover:bg-[var(--charcoal-raised)] hover:text-[var(--on-charcoal)]" disabled={saving} onClick={() => void save()}>
           Save review
         </Button>
-        <Button variant="ghost" onClick={onChangeSetup}>
+        <Button variant="ghost" className="text-[var(--on-charcoal)] hover:bg-[var(--charcoal-raised)] hover:text-[var(--on-charcoal)]" onClick={onChangeSetup}>
           Change setup
         </Button>
       </div>

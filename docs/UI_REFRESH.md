@@ -6,9 +6,9 @@ Updated October 8, 2026. Based on `Shadowtrace-main (5).zip`.
 
 The app previously opened straight into a long setup form. It now opens with a
 complete homepage explaining the product and leading into the working interview
-journey. The design uses warm white, dark ink, forest green, restrained borders,
-large editorial typography and a consistent original brand mark. System fonts
-keep the interface independent of third-party font hosts.
+journey. The current visual identity (Stitch, October 10) is described in [DESIGN_SYSTEM.md](DESIGN_SYSTEM.md); the October 8 identity is in
+[VISUAL_IDENTITY.md](VISUAL_IDENTITY.md); it replaced the original warm-white /
+forest-green / system-font treatment on October 8.
 
 The homepage includes an interactive HR / hiring manager / specialist preview,
 a three-step workflow, targeted-practice explanation, expandable questions and
@@ -152,6 +152,11 @@ Remove-Item Env:UI_TEST_PRODUCTION
 ```
 
 The temporary static mount is a test harness, not a production deployment setup.
+
+The homepage scroll story has a separate check that needs no backend: build the
+client, then run `npm run homepage` from `tools/ui-test`. See
+[RESUME_SCROLL_STORY.md](RESUME_SCROLL_STORY.md) and
+[LANDING_PAGE_MOTION.md](LANDING_PAGE_MOTION.md).
 
 ## Remaining changes before public AWS deployment
 

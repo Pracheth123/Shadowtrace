@@ -4,16 +4,16 @@ import { forwardRef } from "react";
 import { cn } from "@/lib/utils";
 
 const buttonVariants = cva(
-  "inline-flex shrink-0 cursor-pointer items-center justify-center gap-2 whitespace-nowrap rounded-md font-medium transition-[background-color,color,box-shadow,border-color] disabled:pointer-events-none disabled:opacity-45 [&_svg]:shrink-0",
+  "inline-flex shrink-0 cursor-pointer items-center justify-center gap-2 whitespace-nowrap rounded-md font-semibold tracking-[-0.005em] transition-[background-color,color,box-shadow,border-color] duration-150 disabled:pointer-events-none disabled:opacity-45 [&_svg]:shrink-0",
   {
     variants: {
       variant: {
-        default: "bg-primary text-primary-foreground hover:bg-primary/90",
-        accent: "bg-accent text-accent-foreground hover:bg-accent/90",
+        default: "bg-primary text-primary-foreground hover:bg-primary-hover",
+        accent: "bg-accent text-accent-foreground hover:bg-charcoal",
         secondary:
           "bg-secondary text-secondary-foreground hover:bg-secondary/70",
         outline:
-          "border border-input bg-card text-foreground hover:bg-muted hover:text-foreground",
+          "border border-input bg-card text-foreground hover:border-foreground/60 hover:bg-muted hover:text-foreground",
         // The chosen default for most controls in this app.
         ghost: "bg-transparent text-foreground hover:bg-muted",
         destructive:

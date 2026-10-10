@@ -2,7 +2,8 @@
   "name": "shadowtrace-ui-test",
   "private": true,
   "scripts": {
-    "test": "node smoke.cjs"
+    "test": "node smoke.cjs",
+    "homepage": "node homepage-story.cjs"
   },
   "devDependencies": {
     "playwright": "1.62.1",
