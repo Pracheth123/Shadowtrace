@@ -13,10 +13,12 @@ may kick off a repo index.
 
 from __future__ import annotations
 
+import ipaddress
+import math
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Callable, Iterable, Mapping
 
 
 class SessionCapExceeded(RuntimeError):
@@ -106,6 +108,98 @@ class RateLimiter:
             return 0.0
         return max(0.0, hits[0] + self.limit.window_s - self.clock())
 
+    def would_allow(self, key: str) -> bool:
+        """True if `allow` would succeed now. Records nothing."""
+        return len(self._window(key)) < self.limit.max_events
+
+    def refund(self, key: str) -> None:
+        """
+        Return the most recent event. Used when admission was granted but the
+        request failed before any billable work, so an error does not eat quota.
+        """
+        hits = self._hits.get(key)
+        if hits:
+            hits.pop()
+
     def forget(self, key: str) -> None:
         """Drop a caller's history — part of delete-my-data."""
         self._hits.pop(key, None)
+
+
+class AdmissionRefused(RuntimeError):
+    """One of the limits for this request is exhausted."""
+
+    def __init__(self, message: str, retry_after_s: float) -> None:
+        super().__init__(message)
+        self.retry_after_s = max(1, math.ceil(retry_after_s))
+
+
+@dataclass
+class Admission:
+    """
+    A set of limits checked together, all or nothing.
+
+    A request is admitted only if every (limiter, key) pair has room; then one
+    event is recorded on each. Nothing is recorded on a refusal, so being
+    turned away by the address limit does not also spend the candidate's
+    budget. `refund` hands every recorded event back after an early failure.
+    """
+
+    checks: list[tuple[RateLimiter, str, str]]
+
+    def admit(self) -> "Admission":
+        for limiter, key, message in self.checks:
+            if not limiter.would_allow(key):
+                raise AdmissionRefused(message, limiter.retry_after_s(key))
+        for limiter, key, _ in self.checks:
+            limiter.allow(key)
+        return self
+
+    def refund(self) -> None:
+        for limiter, key, _ in self.checks:
+            limiter.refund(key)
+
+
+GLOBAL_KEY = "*"
+
+
+def _networks(trusted: Iterable[str]) -> list[ipaddress._BaseNetwork]:
+    out = []
+    for item in trusted:
+        try:
+            out.append(ipaddress.ip_network(item.strip(), strict=False))
+        except ValueError:
+            continue
+    return out
+
+
+def _in(address: str, networks: list) -> bool:
+    try:
+        ip = ipaddress.ip_address(address.strip())
+    except ValueError:
+        return False
+    return any(ip in net for net in networks)
+
+
+def client_address(peer: str | None, headers: Mapping[str, str], trusted: Iterable[str]) -> str:
+    """
+    The address limits are keyed by.
+
+    X-Forwarded-For is believed only when the socket peer is a trusted proxy;
+    otherwise any client could send its own header and get a fresh budget per
+    request. The chain is walked right to left, skipping trusted proxies, and
+    the first untrusted hop is the client.
+    """
+    peer = (peer or "unknown").strip()
+    networks = _networks(trusted)
+    if not networks or not _in(peer, networks):
+        return peer
+    forwarded = headers.get("x-forwarded-for") or headers.get("X-Forwarded-For") or ""
+    hops = [h.strip() for h in forwarded.split(",") if h.strip()]
+    for hop in reversed(hops):
+        if not _in(hop, networks):
+            try:
+                return str(ipaddress.ip_address(hop))
+            except ValueError:
+                return peer
+    return hops[0] if hops else peer

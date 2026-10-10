@@ -98,8 +98,23 @@ def get_shared_limiter(rpm: int | None = None) -> RpmLimiter:
     """
     global _SHARED_LIMITER
     if _SHARED_LIMITER is None:
-        _SHARED_LIMITER = RpmLimiter(rpm or 30)
+        from interview.config import get_settings
+
+        settings = get_settings()
+        _SHARED_LIMITER = RpmLimiter(
+            rpm or 30,
+            live_reserved_share=settings.live_reserved_share,
+            background_max_defer_s=settings.background_max_defer_s,
+        )
     return _SHARED_LIMITER
+
+
+# Roles whose calls yield to live interviewer turns in the shared limiter.
+BACKGROUND_ROLES = frozenset({"evaluator", "roadmap", "indexer"})
+
+
+def priority_for(role: str) -> str:
+    return "background" if role in BACKGROUND_ROLES else "live"
 
 
 def reset_shared_limiter() -> None:
@@ -458,7 +473,8 @@ class GroqModelClient:
             if deadline is not None:
                 try:
                     await asyncio.wait_for(
-                        self._limiter.acquire(), timeout=max(0.01, deadline - time.monotonic())
+                        self._limiter.acquire(priority_for(meta.role)),
+                        timeout=max(0.01, deadline - time.monotonic()),
                     )
                 except asyncio.TimeoutError:
                     meta.limiter_wait_s += time.monotonic() - waited
@@ -469,7 +485,7 @@ class GroqModelClient:
                         meta=meta,
                     ) from None
             else:
-                await self._limiter.acquire()
+                await self._limiter.acquire(priority_for(meta.role))
             meta.limiter_wait_s += time.monotonic() - waited
             meta.attempts += 1
             sent = time.monotonic()

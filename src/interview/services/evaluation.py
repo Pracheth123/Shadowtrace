@@ -166,6 +166,10 @@ class EvaluationService:
         self.timeout_s = timeout_s
         self._tasks: dict[str, asyncio.Task] = {}
         self._owners: dict[str, str] = {}
+        # Round jobs calling the provider at once, process-wide (EVAL_CONCURRENCY).
+        # One semaphore per event loop: tests run each case on a fresh loop.
+        self._slots: dict[int, tuple[asyncio.AbstractEventLoop, asyncio.Semaphore]] = {}
+        self.concurrency: int | None = None  # overrides the setting (tests, benchmarks)
         # Observers notified when a round or job settles (benchmarks, tests).
         self.on_event: Callable[[str, str, dict], None] | None = None
 
@@ -218,6 +222,26 @@ class EvaluationService:
         task = self._tasks.get(key)
         return task is not None and not task.done()
 
+    def active_jobs(self) -> int:
+        """Evaluation jobs queued or running in this process."""
+        return sum(1 for task in self._tasks.values() if not task.done())
+
+    def at_capacity(self) -> bool:
+        from interview.config import get_settings
+
+        return self.active_jobs() >= get_settings().eval_queue_max
+
+    def _slot(self) -> asyncio.Semaphore:
+        from interview.config import get_settings
+
+        loop = asyncio.get_running_loop()
+        held = self._slots.get(id(loop))
+        if held is None or held[0] is not loop:
+            size = self.concurrency or get_settings().eval_concurrency
+            held = (loop, asyncio.Semaphore(size))
+            self._slots = {id(loop): held}
+        return held[1]
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -233,6 +257,17 @@ class EvaluationService:
         if state == "failed":
             # Only an explicit retry restarts a failed job.
             return meta
+        if self.at_capacity():
+            # Bounded queue: refuse before any provider work, keep the
+            # transcript, and say how to recover. Nothing is silently dropped.
+            return self._write_meta(
+                candidate_id,
+                directory,
+                "failed",
+                error="The server is busy evaluating other interviews, so feedback was not started.",
+                recovery="Your transcript is saved. Retry in a few minutes.",
+                busy=True,
+            )
         evaluation = dict(meta.get("evaluation") or {})
         timings = dict(evaluation.get("timings") or {})
         timings.setdefault("queued_at", _now())
@@ -274,7 +309,7 @@ class EvaluationService:
                 ),
             }
         meta = self._write_meta(
-            candidate_id, directory, "evaluation_queued", error=None, recovery=None
+            candidate_id, directory, "evaluation_queued", error=None, recovery=None, busy=None
         )
         self._track(
             session_id,
@@ -577,6 +612,12 @@ class EvaluationService:
                 self.on_event(session_id, round_id, states[round_id])
 
         async def run_one(job: RoundJob) -> None:
+            slot = self._slot()
+            waited = time.time()
+            async with slot:
+                await run_one_in_slot(job, slot_wait_s=time.time() - waited)
+
+        async def run_one_in_slot(job: RoundJob, *, slot_wait_s: float) -> None:
             begun = time.time()
             queue_delay = begun - float(states[job.round_id].get("queued_ts") or begun)
             persist_round_state(
@@ -584,7 +625,10 @@ class EvaluationService:
                 state="running",
                 started_at=_now(),
                 started_ts=begun,
+                # queue_delay_s: queued → running, including slot_wait_s (waiting
+                # for one of EVAL_CONCURRENCY provider slots).
                 queue_delay_s=round(queue_delay, 3),
+                slot_wait_s=round(slot_wait_s, 3),
                 runs=int(states[job.round_id].get("runs") or 0) + 1,
             )
             try:

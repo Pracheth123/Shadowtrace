@@ -28,6 +28,18 @@ _OFFLINE_ENV = {
     "MOCK_LLM": "1",
     # Never sweep anything during tests; retention tests call the sweep directly.
     "GUEST_RETENTION_DAYS": "0",
+    # Every TestClient shares one address and the server's limiters live for
+    # the whole process, so address/global admission limits are generous here.
+    # Admission tests install tight limiters explicitly.
+    "ADDRESS_SESSION_STARTS_PER_HOUR": "10000",
+    "ADDRESS_INTAKES_PER_HOUR": "10000",
+    "GLOBAL_INTAKES_PER_HOUR": "100000",
+    "GUESTS_PER_ADDRESS_PER_HOUR": "10000",
+    "GLOBAL_GUESTS_PER_HOUR": "100000",
+    "SESSION_STARTS_PER_HOUR": "1000",
+    "PRACTICE_PER_HOUR": "1000",
+    "EVAL_RETRIES_PER_HOUR": "1000",
+    "REVISIONS_PER_HOUR": "1000",
 }
 
 

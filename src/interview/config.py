@@ -123,10 +123,51 @@ class Settings(BaseSettings):
         default="http://localhost:5173,http://127.0.0.1:5173",
         alias="ALLOWED_ORIGINS",
     )
+    # Hard server-side ceiling on one live session's wall time, enforced by a
+    # watchdog on a monotonic deadline that survives reconnects. A session's
+    # own plan (interview minutes, or a shorter focused practice) plus
+    # SESSION_OVERRUN_GRACE_S is used when that is shorter.
     max_session_seconds: int = Field(default=900, ge=60, alias="MAX_SESSION_SECONDS")
+    session_overrun_grace_s: float = Field(
+        default=120.0, ge=0.0, le=1800.0, alias="SESSION_OVERRUN_GRACE_S"
+    )
+    # A session with no candidate input and no interviewer speech for this long
+    # is ended through the normal close path (0 disables). A warning is sent
+    # SESSION_IDLE_WARNING_S before that.
+    session_idle_seconds: int = Field(default=300, ge=0, le=7200, alias="SESSION_IDLE_SECONDS")
+    session_idle_warning_s: int = Field(default=60, ge=0, le=600, alias="SESSION_IDLE_WARNING_S")
     max_live_sessions: int = Field(default=8, ge=1, le=200, alias="MAX_LIVE_SESSIONS")
     intake_rph: int = Field(default=10, ge=1, le=1000, alias="INTAKE_RPH")
     resume_ttl_s: float = Field(default=180.0, ge=5.0, le=3600.0, alias="RESUME_TTL_S")
+
+    # Admission. Per-candidate limits alone are bypassed by minting another
+    # guest, so every billable path is also limited per client address and
+    # process-wide. All are in-process (one worker; see docs/deploy).
+    session_starts_per_hour: int = Field(default=12, ge=1, le=1000, alias="SESSION_STARTS_PER_HOUR")
+    address_session_starts_per_hour: int = Field(
+        default=30, ge=1, le=10000, alias="ADDRESS_SESSION_STARTS_PER_HOUR"
+    )
+    address_intakes_per_hour: int = Field(default=20, ge=1, le=10000, alias="ADDRESS_INTAKES_PER_HOUR")
+    global_intakes_per_hour: int = Field(default=200, ge=1, le=100000, alias="GLOBAL_INTAKES_PER_HOUR")
+    guests_per_address_per_hour: int = Field(default=20, ge=1, le=10000, alias="GUESTS_PER_ADDRESS_PER_HOUR")
+    global_guests_per_hour: int = Field(default=500, ge=1, le=100000, alias="GLOBAL_GUESTS_PER_HOUR")
+    practice_per_hour: int = Field(default=20, ge=1, le=1000, alias="PRACTICE_PER_HOUR")
+    eval_retries_per_hour: int = Field(default=10, ge=1, le=1000, alias="EVAL_RETRIES_PER_HOUR")
+    revisions_per_hour: int = Field(default=10, ge=1, le=1000, alias="REVISIONS_PER_HOUR")
+    # Evaluation work: at most this many round jobs call the provider at once,
+    # process-wide, and at most EVAL_QUEUE_MAX sessions wait or run.
+    eval_concurrency: int = Field(default=3, ge=1, le=16, alias="EVAL_CONCURRENCY")
+    eval_queue_max: int = Field(default=20, ge=1, le=1000, alias="EVAL_QUEUE_MAX")
+    # Background model calls (evaluation, roadmap) leave this share of the
+    # per-minute budget for live turns, and wait for queued live turns first,
+    # but never longer than BACKGROUND_MAX_DEFER_S.
+    live_reserved_share: float = Field(default=0.2, ge=0.0, le=0.9, alias="LIVE_RESERVED_SHARE")
+    background_max_defer_s: float = Field(
+        default=20.0, ge=0.0, le=600.0, alias="BACKGROUND_MAX_DEFER_S"
+    )
+    # Reverse proxies whose X-Forwarded-For is believed (IPs or CIDRs). Empty:
+    # the socket peer is the client address and forwarding headers are ignored.
+    trusted_proxies_raw: str = Field(default="", alias="TRUSTED_PROXIES")
 
     # Retention of guest data. A guest inactive for this many days is deleted
     # by the background sweep (0 disables it). Disclosed before any upload.
@@ -403,6 +444,10 @@ class Settings(BaseSettings):
         ]
 
     @property
+    def trusted_proxies(self) -> list[str]:
+        return [p.strip() for p in self.trusted_proxies_raw.split(",") if p.strip()]
+
+    @property
     def has_groq(self) -> bool:
         return bool(self.groq_api_key.get_secret_value().strip())
 
@@ -525,6 +570,32 @@ class Settings(BaseSettings):
                 "job_deadline_s": self.eval_job_deadline_s,
                 "max_round_runs": self.eval_max_round_runs,
                 "max_tokens": self.eval_max_tokens,
+            },
+            "session_budget": {
+                "max_session_seconds": self.max_session_seconds,
+                "overrun_grace_s": self.session_overrun_grace_s,
+                "idle_seconds": self.session_idle_seconds,
+                "idle_warning_s": self.session_idle_warning_s,
+                "max_live_sessions": self.max_live_sessions,
+            },
+            "admission": {
+                "session_starts_per_hour": self.session_starts_per_hour,
+                "address_session_starts_per_hour": self.address_session_starts_per_hour,
+                "intake_per_candidate_per_hour": self.intake_rph,
+                "address_intakes_per_hour": self.address_intakes_per_hour,
+                "global_intakes_per_hour": self.global_intakes_per_hour,
+                "guests_per_address_per_hour": self.guests_per_address_per_hour,
+                "global_guests_per_hour": self.global_guests_per_hour,
+                "practice_per_hour": self.practice_per_hour,
+                "eval_retries_per_hour": self.eval_retries_per_hour,
+                "revisions_per_hour": self.revisions_per_hour,
+                "eval_concurrency": self.eval_concurrency,
+                "eval_queue_max": self.eval_queue_max,
+                "trusted_proxies": len(self.trusted_proxies),
+            },
+            "scheduling": {
+                "live_reserved_share": self.live_reserved_share,
+                "background_max_defer_s": self.background_max_defer_s,
             },
             "retention": {
                 "guest_retention_days": self.guest_retention_days,

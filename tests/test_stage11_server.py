@@ -214,7 +214,8 @@ def test_session_cap_rejects_the_next_connection(server, monkeypatch) -> None:
                 second.send_text(json.dumps({"type": "session_start"}))
                 rejected = _ready(second)
                 assert rejected["type"] == "session_rejected"
-                assert "limit is 1" in rejected["reason"]
+                assert "limit is 1" in rejected["detail"]
+                assert rejected["retry_after_s"] > 0
 
             _end(first)
     # The slot is released once the session actually ends.
