@@ -16,7 +16,13 @@ OUT=dist-release
 STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
 
-(cd client && npm ci && npm run build)
+# NPM_INSTALL=skip reuses an existing node_modules (installed from the same lock),
+# e.g. when a running dev server holds esbuild open on Windows.
+if [ "${NPM_INSTALL:-ci}" = "skip" ] && [ -d client/node_modules ]; then
+  (cd client && npm run build)
+else
+  (cd client && npm ci && npm run build)
+fi
 
 mkdir -p "$STAGE/shadowtrace-$SHA"
 git archive HEAD src pyproject.toml requirements-lock.txt requirements-postgres.txt README.md \
