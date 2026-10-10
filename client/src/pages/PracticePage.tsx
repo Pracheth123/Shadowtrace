@@ -31,6 +31,8 @@ import {
   segmentedControlRootClassName,
 } from "@/lib/segmented-control";
 import type { SessionOptions } from "@/lib/use-session";
+import { isCaptureSupported } from "@/lib/audio-capture";
+import { canSpeak, readMicPermission, voiceMessage, voiceState, type MicPermission } from "@/lib/voice-availability";
 
 const itemClassName = segmentedControlItemVariants({ className: "grow", state: "checked" });
 
@@ -55,16 +57,29 @@ export function PracticePage({ practiceId, onStart, onOpenSession, onOpenPractic
   const [lane, setLane] = useState<Lane>("text");
   const [consent, setConsent] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [voiceAvailable, setVoiceAvailable] = useState(false);
+  const [health, setHealth] = useState<Record<string, any> | null>(null);
+  const [healthFailed, setHealthFailed] = useState(false);
+  const [micPermission, setMicPermission] = useState<MicPermission>("unknown");
 
   useEffect(() => {
     let active = true;
     fetch(`${HTTP_BASE}/health`)
-      .then((response) => response.ok ? response.json() : null)
-      .then((health) => { if (active) setVoiceAvailable(health?.providers?.voice === "deepgram"); })
-      .catch(() => { if (active) setVoiceAvailable(false); });
+      .then((response) => { if (!response.ok) throw new Error("unavailable"); return response.json(); })
+      .then((body) => { if (active) setHealth(body); })
+      .catch(() => { if (active) setHealthFailed(true); });
+    void readMicPermission().then((result) => { if (active) setMicPermission(result.state); });
     return () => { active = false; };
   }, []);
+
+  const voice = voiceState(health, healthFailed, {
+    captureSupported: isCaptureSupported(),
+    secureContext: window.isSecureContext,
+    micPermission,
+  });
+  const voiceAvailable = canSpeak(voice);
+  useEffect(() => {
+    if (!voiceAvailable && lane === "voice") setLane("text");
+  }, [voiceAvailable, lane]);
 
   const load = useCallback(async () => {
     try {
@@ -200,8 +215,9 @@ export function PracticePage({ practiceId, onStart, onOpenSession, onOpenPractic
           <CardTitle className="text-base">Start an attempt</CardTitle>
           <CardDescription>
             A short session with the same interviewer role: two core questions on this competency, with at most two
-            follow-ups each. {voiceAvailable ? "Choose typing or speaking." : "Typing is ready. Speaking requires a configured speech provider."}
+            follow-ups each. {voiceAvailable ? "Choose typing or speaking." : "Typing is ready."}
           </CardDescription>
+          <p id="practice-voice-status" className="voice-status" data-voice-state={voice.kind}>{voiceMessage(voice)}</p>
         </CardHeader>
         <CardPanel className="flex flex-col gap-3">
           <RadioGroupPrimitive
@@ -214,7 +230,7 @@ export function PracticePage({ practiceId, onStart, onOpenSession, onOpenPractic
             <RadioPrimitive.Root className={itemClassName} value="text">
               Type
             </RadioPrimitive.Root>
-            <RadioPrimitive.Root className={itemClassName} value="voice" disabled={!voiceAvailable}>
+            <RadioPrimitive.Root className={itemClassName} value="voice" disabled={!voiceAvailable} aria-describedby="practice-voice-status">
               Speak
             </RadioPrimitive.Root>
           </RadioGroupPrimitive>

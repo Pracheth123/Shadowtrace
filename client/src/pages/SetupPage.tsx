@@ -38,6 +38,15 @@ import {
   type RoundChoice,
   type Seniority,
 } from "@/lib/api";
+import { isCaptureSupported } from "@/lib/audio-capture";
+import {
+  canSpeak,
+  readMicPermission,
+  voiceDeveloperNote,
+  voiceMessage,
+  voiceState,
+  type MicPermission,
+} from "@/lib/voice-availability";
 import {
   segmentedControlItemVariants,
   segmentedControlRootClassName,
@@ -107,18 +116,47 @@ export function SetupPage({ onStart, onOpenHistory }: SetupPageProps) {
   const [consent, setConsent] = useState(false);
   const pollRef = useRef<number | null>(null);
 
-  useEffect(() => {
-    void ensureGuest().catch(() => undefined);
+  const [micPermission, setMicPermission] = useState<MicPermission>("unknown");
+
+  const loadHealth = () => {
+    setHealth(null);
+    setHealthFailed(false);
     fetch(`${HTTP_BASE}/health`)
       .then((r) => { if (!r.ok) throw new Error("Service unavailable"); return r.json(); })
       .then(setHealth)
       .catch(() => { setHealth(null); setHealthFailed(true); });
+  };
+
+  useEffect(() => {
+    void ensureGuest().catch(() => undefined);
+    loadHealth();
+    // Read (never request) the microphone permission, and follow changes made
+    // in the browser's site settings while this page is open.
+    let status: PermissionStatus | null = null;
+    const update = () => status && setMicPermission(status.state as MicPermission);
+    void readMicPermission().then((result) => {
+      setMicPermission(result.state);
+      status = result.status;
+      status?.addEventListener?.("change", update);
+    });
     return () => {
       if (pollRef.current) window.clearTimeout(pollRef.current);
+      status?.removeEventListener?.("change", update);
     };
   }, []);
 
-  const voiceAvailable = health?.providers?.voice === "deepgram";
+  const voice = voiceState(health, healthFailed, {
+    captureSupported: isCaptureSupported(),
+    secureContext: window.isSecureContext,
+    micPermission,
+  });
+  const voiceAvailable = canSpeak(voice);
+  const developerNote = import.meta.env.DEV ? voiceDeveloperNote(voice) : null;
+
+  // Speak is never left selected once it cannot work; the candidate sees why.
+  useEffect(() => {
+    if (!voiceAvailable && lane === "voice") setLane("text");
+  }, [voiceAvailable, lane]);
 
   const poll = (intakeId: string) => {
     api<IntakeResult>(`/api/intake/${intakeId}`)
@@ -318,8 +356,10 @@ export function SetupPage({ onStart, onOpenHistory }: SetupPageProps) {
       </header>
       <div className="provider-status" role="status">
         <ShieldCheckIcon aria-hidden="true" />
-        <p>{health === null ? healthFailed ? "The interview service is unavailable. Check that the backend is running, then reload this page." : "Connecting to the interview service…" : health.providers?.interviewer === "groq" ? <><strong>Interview service configured.</strong> {voiceAvailable ? "Voice and typing are configured. Provider access is verified when used." : "Typing is configured; voice is currently unavailable."}</> : <><strong>Development mode.</strong> Questions follow a fixed plan. Feedback is a placeholder, not an AI assessment. {voiceAvailable ? "Speech is configured." : "Use typing for this preview."}</>}</p>
+        <p>{health === null ? healthFailed ? "The interview service can’t be reached right now. Check again in a moment, or reload this page." : "Connecting to the interview service…" : health.providers?.interviewer === "groq" ? <><strong>Interview service configured.</strong> {voiceAvailable ? "Voice and typing are configured. Provider access is verified when used." : "Typing is available; voice is currently unavailable."}</> : <><strong>Development mode.</strong> Questions follow a fixed plan. Feedback is a placeholder, not an AI assessment. {voiceAvailable ? "Speech is configured." : "Use typing for this preview."}</>}</p>
+        {healthFailed && <Button type="button" variant="outline" size="sm" onClick={loadHealth}>Check again</Button>}
       </div>
+      {developerNote && <p className="dev-note" data-testid="voice-dev-note"><strong>Developer:</strong> {developerNote}</p>}
       <div className="setup-layout">
       <Card>
         <CardPanel className="p-0">
@@ -405,7 +445,7 @@ export function SetupPage({ onStart, onOpenHistory }: SetupPageProps) {
                 onValueChange={(next) => setLane(next as Lane)}
                 name="lane"
               >
-                <RadioPrimitive.Root className={itemClassName} value="voice" disabled={!voiceAvailable}>
+                <RadioPrimitive.Root className={itemClassName} value="voice" disabled={!voiceAvailable} aria-describedby="voice-status">
                   Speak
                 </RadioPrimitive.Root>
                 <RadioPrimitive.Root className={itemClassName} value="text">
@@ -415,10 +455,15 @@ export function SetupPage({ onStart, onOpenHistory }: SetupPageProps) {
               <FieldDescription>
                 {lane === "text"
                   ? "Typing is fine. Spoken delivery is not assessed or scored."
-                  : voiceAvailable
-                    ? "You will need microphone access. You can switch to typing if voice fails."
-                    : "Voice is unavailable right now. You can prepare and complete the interview by typing."}
+                  : "You will need microphone access. You can switch to typing if voice fails."}
               </FieldDescription>
+              {/* Shown whichever lane is selected, so a disabled Speak always says why. */}
+              <p id="voice-status" className="voice-status" data-voice-state={voice.kind} aria-live="polite">
+                {voiceMessage(voice)}
+                {voice.kind === "unreachable" && (
+                  <> <button type="button" className="voice-status-action" onClick={loadHealth}>Check again</button></>
+                )}
+              </p>
             </Field>
 
             <Field>

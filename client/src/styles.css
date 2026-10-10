@@ -197,6 +197,13 @@
 .provider-status { display: flex; gap: 8px; align-items: flex-start; font-size: 11px; line-height: 1.7; padding: 13px 16px; border-radius: 8px; border: 1px solid var(--rule); margin-bottom: 22px; color: var(--graphite-600); }
 .provider-status > svg { width: 15px; height: 15px; min-width: 15px; margin-top: 2px; }
 .provider-status strong { font-weight: 600; }
+.provider-status > button { margin-left: auto; flex-shrink: 0; }
+/* Why Speak is or is not available; visible whichever lane is selected. */
+.voice-status { font-size: 12px; line-height: 1.6; color: var(--graphite-600); margin-top: 6px; }
+.voice-status[data-voice-state="available"] { color: var(--graphite-600); }
+.voice-status:not([data-voice-state="available"]):not([data-voice-state="checking"]) { color: rgb(var(--warning)); }
+.voice-status-action { text-decoration: underline; text-underline-offset: 2px; font-weight: 600; }
+.dev-note { font-size: 11px; line-height: 1.6; margin: -12px 0 22px; padding: 8px 12px; border: 1px dashed var(--rule-strong); border-radius: 6px; color: var(--graphite-600); }
 .interview-layout { max-width: 940px; }
 .live-question { background: var(--pen-800); color: var(--pen-50); border-color: var(--pen-800); box-shadow: none; }
 .live-question > div { padding: 32px; }

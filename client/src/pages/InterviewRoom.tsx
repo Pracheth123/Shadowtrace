@@ -8,7 +8,16 @@ import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { toastManager } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
-import { statusMessage, type useSession } from "@/lib/use-session";
+import { statusMessage, type SessionWarning, type useSession } from "@/lib/use-session";
+
+/** What a server lifetime warning means for the candidate, in plain words. */
+function warningText(warning: SessionWarning): string {
+  if (warning.reason === "idle") {
+    return `Are you still there? The interview will end in about ${warning.secondsLeft} seconds unless you answer. Feedback will cover what you reached.`;
+  }
+  const minutes = Math.max(1, Math.round(warning.secondsLeft / 60));
+  return `About ${minutes} minute${minutes > 1 ? "s" : ""} of session time left. The interview will then close, and feedback will cover what you reached.`;
+}
 
 // WaveSurfer only matters in the voice lane, so it is not in the entry bundle.
 const Waveform = lazy(() =>
@@ -215,6 +224,17 @@ export function InterviewRoom({ session, onFinished }: InterviewRoomProps) {
         </p>
       )}
 
+      {session.sessionWarning && session.status !== "complete" && (
+        <div role="status" aria-live="polite" className="session-warning flex flex-wrap items-center gap-3 rounded-md bg-warning/10 px-3 py-2 text-sm text-warning">
+          <p className="flex-1">{warningText(session.sessionWarning)}</p>
+          {session.sessionWarning.reason === "idle" && (
+            <Button variant="outline" size="sm" onClick={session.stillHere}>
+              I’m still here
+            </Button>
+          )}
+        </div>
+      )}
+
       {voiceTrouble && (
         <div role="alert" className="flex flex-wrap items-center gap-3 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
           <p className="flex-1">
@@ -234,6 +254,8 @@ export function InterviewRoom({ session, onFinished }: InterviewRoomProps) {
       {session.status === "complete" && (
         <div className="flex items-center gap-3 rounded-md bg-muted px-3 py-2 text-sm">
           <p className="flex-1">
+            {session.endedReason === "time_limit" && "The session reached its time limit, so it was closed. "}
+            {session.endedReason === "idle" && "The session was closed because there was no answer for a while. "}
             {session.isPractice
               ? "The practice attempt has finished. Its feedback is being prepared."
               : "The interview has finished. Your feedback is being prepared."}

@@ -121,6 +121,18 @@ const COUNTDOWN_S = 5;
 /** If no next question arrives after an answer, reopen the mic rather than hang. */
 const NEXT_QUESTION_TIMEOUT_MS = 20000;
 
+export interface SessionLimits {
+  /** Epoch ms at which the server will end the session. */
+  deadlineAt: number;
+  /** Seconds without input before the server ends it (0 = no idle limit). */
+  idleSeconds: number;
+}
+
+export interface SessionWarning {
+  reason: "idle" | "time_limit";
+  secondsLeft: number;
+}
+
 export function useSession() {
   const [status, setStatus] = useState<SessionStatus>("idle");
   const [statusDetail, setStatusDetail] = useState("");
@@ -146,6 +158,11 @@ export function useSession() {
   const [lines, setLines] = useState<TranscriptLine[]>([]);
   const [isPractice, setIsPractice] = useState(false);
   const [micError, setMicError] = useState("");
+  // Server-enforced lifetime: remaining wall time and idle policy from
+  // session_ready, the latest warning, and why the session ended.
+  const [sessionLimits, setSessionLimits] = useState<SessionLimits | null>(null);
+  const [sessionWarning, setSessionWarning] = useState<SessionWarning | null>(null);
+  const [endedReason, setEndedReason] = useState("");
   const [voiceInfo, setVoiceInfo] = useState<{
     enabled: boolean;
     provider: string;
@@ -232,10 +249,13 @@ export function useSession() {
   const addLogRef = useRef<typeof addLog | null>(null);
   addLogRef.current = addLog;
 
-  const send = useCallback((payload: object) => {
+  const send = useCallback((payload: { type?: string; [key: string]: unknown }) => {
     const socket = wsRef.current;
     if (socket && socket.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify(payload));
+      // Anything but a playback ack counts as activity on the server, so an
+      // idle warning no longer applies.
+      if (payload.type !== "playback_ack") setSessionWarning((w) => (w?.reason === "idle" ? null : w));
     }
   }, []);
 
@@ -362,6 +382,12 @@ export function useSession() {
             });
           }
           if (message.degraded) addLog("degraded", String(message.degraded));
+          if (message.limits) {
+            setSessionLimits({
+              deadlineAt: Date.now() + Number(message.limits.deadline_s ?? 0) * 1000,
+              idleSeconds: Number(message.limits.idle_s ?? 0),
+            });
+          }
           setIsPractice(Boolean(message.practice));
           setStatus(message.resumed ? "resumed" : "ready");
           setStatusDetail("");
@@ -385,6 +411,14 @@ export function useSession() {
             if (message.resumed) openMic();
             else applyMute();
           }
+          return;
+        }
+
+        if (message.type === "session_warning") {
+          setSessionWarning({
+            reason: message.reason === "idle" ? "idle" : "time_limit",
+            secondsLeft: Number(message.seconds_left ?? 0),
+          });
           return;
         }
 
@@ -546,6 +580,8 @@ export function useSession() {
 
         if (message.type === "session_complete") {
           endedRef.current = true;
+          setEndedReason(String(message.ended_reason ?? ""));
+          setSessionWarning(null);
           clearFloorTimers();
           if (message.session_id) setSessionId(String(message.session_id));
           playbackRef.current?.stopAll();
@@ -677,6 +713,11 @@ export function useSession() {
     setRunning(false);
   }, [clearFloorTimers, endCapture, send]);
 
+  /** Answer an idle warning without giving an answer yet. */
+  const stillHere = useCallback(() => {
+    send({ type: "still_here" });
+  }, [send]);
+
   /** "Done answering": close the answer now instead of waiting for silence. */
   const finishAnswer = useCallback(() => {
     send({ type: "answer_done" });
@@ -799,6 +840,10 @@ export function useSession() {
     isPractice,
     micError,
     retryMic,
+    sessionLimits,
+    sessionWarning,
+    endedReason,
+    stillHere,
     captureSupported: isCaptureSupported(),
     start,
     switchToText,
