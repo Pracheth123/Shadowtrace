@@ -17,6 +17,18 @@ Run with the server STOPPED (systemctl stop shadowtrace). Steps:
   4. Move an existing TARGET aside to TARGET.pre-restore-<time> (never deleted
      by this script), then move the verified staging copy into place.
 
+With PostgreSQL (DATABASE_URL set to the TARGET database — restore into an
+isolated database first): the archive's index snapshot replaces the target's
+index in one transaction, the same deletions are applied there, and the index
+is then reconciled with the restored report files (orphan rows removed,
+unindexed reports re-indexed). The restored DATA_DIR gets an OPERATOR_STOP
+file: the service stays in maintenance (no new work) until an operator has
+checked the summary and removed it.
+
+Deletion tombstones: production keeps DELETION_LEDGER_PATH outside DATA_DIR,
+so restoring an older archive never replaces it; this script replays the union
+of that live ledger and the archive's own.
+
 Interrupted evaluation jobs in the restored data are reported honestly by the
 server on first read ("interrupted — retry"); completed rounds are kept.
 """
@@ -76,6 +88,13 @@ def verify(stage: Path, manifest: dict) -> list[str]:
         problems.append(f"missing: {rel}")
     for rel in sorted(present - set(listed)):
         problems.append(f"not in manifest: {rel}")
+    pg = manifest.get("postgres") or {}
+    for name, info in (pg.get("files") or {}).items():
+        path = stage.parent / "postgres" / name
+        if not path.is_file():
+            problems.append(f"missing: postgres/{name}")
+        elif path.stat().st_size != info["bytes"] or sha256(path) != info["sha256"]:
+            problems.append(f"checksum mismatch: postgres/{name}")
     for rel, info in listed.items():
         path = stage / rel
         if not path.is_file():
@@ -138,7 +157,8 @@ def replay_deletions(data: Path, entries: list[dict]) -> dict:
     return {"ledger_candidates": len(ids), "dirs_removed": removed_dirs, "store_rows_removed": rows}
 
 
-def restore(archive: Path, target: Path | None, *, ledger: Path | None = None, verify_only: bool = False) -> dict:
+def restore(archive: Path, target: Path | None, *, ledger: Path | None = None, verify_only: bool = False,
+            pg_store=None) -> dict:
     with tempfile.TemporaryDirectory(prefix="st-restore-") as tmp:
         root = Path(tmp)
         manifest = extract(archive, root)
@@ -146,14 +166,23 @@ def restore(archive: Path, target: Path | None, *, ledger: Path | None = None, v
         problems = verify(stage, manifest)
         if problems:
             raise RestoreRefused("verification failed: " + "; ".join(problems[:10]))
+        has_pg = bool(manifest.get("postgres"))
         summary = {"archive": str(archive), "created_at": manifest.get("created_at"),
-                   "files": len(manifest.get("files") or {}), "verified": True}
+                   "files": len(manifest.get("files") or {}), "postgres_snapshot": has_pg, "verified": True}
         if verify_only:
             return summary
+        if has_pg and pg_store is None:
+            raise RestoreRefused("archive holds a PostgreSQL index snapshot; set DATABASE_URL to the target database")
         assert target is not None
         current_ledger = ledger or (target / "deletion-ledger.jsonl")
         entries = read_ledger(stage / "deletion-ledger.jsonl") + read_ledger(current_ledger)
         summary["deletions"] = replay_deletions(stage, entries)
+        if has_pg:
+            from interview.storage.ops import import_snapshot
+
+            import_snapshot(pg_store, root / "postgres")
+            summary["deletions"]["postgres_rows_removed"] = sum(
+                pg_store.delete_candidate(cid) for cid in sorted({e["candidate_id"] for e in entries}))
         merged = {(e["candidate_id"], e.get("deleted_at", "")): e for e in entries}
         if merged:
             (stage / "deletion-ledger.jsonl").write_text(
@@ -167,6 +196,20 @@ def restore(archive: Path, target: Path | None, *, ledger: Path | None = None, v
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(stage), str(target))
         summary["restored_to"] = str(target)
+        # Index ↔ files: remove rows with no report file, re-index unindexed reports.
+        from interview.storage.reconcile import reconcile
+
+        index = pg_store
+        if index is None and (target / "reports.sqlite").exists():
+            from interview.roadmap.reports import ReportStore
+
+            index = ReportStore(target / "reports.sqlite")
+        if index is not None:
+            summary["reconcile"] = reconcile(index, target / "candidates", apply=True).as_dict()
+            summary["reconcile_after"] = reconcile(index, target / "candidates").as_dict()
+        # Maintenance until an operator has reviewed this summary.
+        (target / "OPERATOR_STOP").touch()
+        summary["maintenance"] = f"OPERATOR_STOP left in {target}; remove it after checking this summary"
         return summary
 
 
@@ -179,8 +222,17 @@ def main() -> int:
     args = parser.parse_args()
     if not args.verify_only and args.target is None:
         parser.error("--target is required unless --verify-only")
+    import os
+
+    ledger = args.ledger or (Path(os.environ["DELETION_LEDGER_PATH"]) if os.environ.get("DELETION_LEDGER_PATH") else None)
+    pg_store = None
+    if not args.verify_only and os.environ.get("DATABASE_URL", "").startswith(("postgresql://", "postgres://")):
+        from interview.config import get_settings
+        from interview.storage import open_report_store
+
+        pg_store = open_report_store(get_settings(), args.target)
     try:
-        summary = restore(args.archive, args.target, ledger=args.ledger, verify_only=args.verify_only)
+        summary = restore(args.archive, args.target, ledger=ledger, verify_only=args.verify_only, pg_store=pg_store)
     except RestoreRefused as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 2
