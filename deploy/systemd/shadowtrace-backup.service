@@ -1,0 +1,9 @@
+# /etc/systemd/system/shadowtrace-backup.service
+[Unit]
+Description=Shadowtrace coordinated backup (files + PostgreSQL report index)
+After=shadowtrace.service
+
+[Service]
+Type=oneshot
+ExecStart=/srv/shadowtrace/current/deploy/scripts/backup.sh
+Nice=10

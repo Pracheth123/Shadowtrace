@@ -1,0 +1,378 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Shadowtrace small demonstration stack: one EC2 host (Caddy HTTPS + one FastAPI
+  worker), encrypted EBS for DATA_DIR files, a private Single-AZ RDS PostgreSQL
+  for the report index, optional private S3 bucket for backups. No NAT gateway,
+  load balancer, autoscaling, Multi-AZ or read replicas. See docs/DEPLOYMENT.md.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: { default: "Host" }
+        Parameters: [InstanceType, LatestAmiId, AdminSshCidr, KeyName, DataVolumeGiB, DomainName]
+      - Label: { default: "Database" }
+        Parameters: [DbInstanceClass, DbEngineVersion, DbAllocatedGiB, DbBackupRetentionDays, DbMasterUsername, DbDeletionProtection]
+      - Label: { default: "Backups" }
+        Parameters: [CreateBackupBucket, BackupRetentionDays]
+
+Parameters:
+  InstanceType:
+    Type: String
+    Default: t3.micro
+    AllowedValues: [t3.micro, t3.small, t4g.micro, t4g.small]
+    Description: >-
+      Measured app memory is ~90 MB RSS idle/peak offline (tools/ops/measure_memory.py);
+      1 GiB (micro) leaves room for Caddy and the OS. t4g.* is Arm: also set
+      LatestAmiId to the arm64 parameter and build the release on/for arm64.
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+    Description: Amazon Linux 2023. For t4g use /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64
+  AdminSshCidr:
+    Type: String
+    Default: ""
+    Description: >-
+      Optional. Your IP as a /32 to allow SSH (22). Leave empty to use only SSM
+      Session Manager (no inbound admin port at all).
+  KeyName:
+    Type: String
+    Default: ""
+    Description: Optional EC2 key pair name, only needed with AdminSshCidr.
+  DataVolumeGiB:
+    Type: Number
+    Default: 10
+    MinValue: 4
+    MaxValue: 200
+  DomainName:
+    Type: String
+    Default: ""
+    Description: Hostname you control (A record → the Elastic IP). Used for the Caddy site; informational here.
+  DbInstanceClass:
+    Type: String
+    Default: db.t4g.micro
+    AllowedValues: [db.t4g.micro, db.t3.micro, db.t4g.small]
+  DbEngineVersion:
+    Type: String
+    Default: "16.4"
+    Description: Check availability first - aws rds describe-db-engine-versions --engine postgres --region <region>
+  DbAllocatedGiB:
+    Type: Number
+    Default: 20
+    MinValue: 20
+    MaxValue: 100
+  DbBackupRetentionDays:
+    Type: Number
+    Default: 7
+    MinValue: 1
+    MaxValue: 35
+  DbMasterUsername:
+    Type: String
+    Default: st_admin
+    AllowedPattern: "[a-z][a-z0-9_]{2,30}"
+  DbDeletionProtection:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: true blocks accidental deletion; set false before teardown.
+  CreateBackupBucket:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+  BackupRetentionDays:
+    Type: Number
+    Default: 7
+    MinValue: 1
+    MaxValue: 90
+    Description: S3 lifecycle expiry for backup archives. Keep ≤ the guest retention period.
+
+Conditions:
+  HasAdminSsh: !Not [!Equals [!Ref AdminSshCidr, ""]]
+  HasKey: !Not [!Equals [!Ref KeyName, ""]]
+  MakeBucket: !Equals [!Ref CreateBackupBucket, "true"]
+
+Resources:
+  # ------------------------------------------------------------------ network
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.20.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-vpc" }]
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+  GatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties: { VpcId: !Ref Vpc, InternetGatewayId: !Ref InternetGateway }
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.20.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-public-a" }]
+  # Two private subnets in two AZs: required by the DB subnet group even for
+  # Single-AZ. No route to the internet; nothing outside the VPC can reach them.
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.20.11.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-private-a" }]
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.20.12.0/24
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-private-b" }]
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties: { VpcId: !Ref Vpc }
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: GatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  PublicSubnetRoutes:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { SubnetId: !Ref PublicSubnet, RouteTableId: !Ref PublicRouteTable }
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties: { VpcId: !Ref Vpc }
+  PrivateARoutes:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { SubnetId: !Ref PrivateSubnetA, RouteTableId: !Ref PrivateRouteTable }
+  PrivateBRoutes:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { SubnetId: !Ref PrivateSubnetB, RouteTableId: !Ref PrivateRouteTable }
+
+  # ------------------------------------------------------------ security groups
+  AppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Shadowtrace app host - HTTP/HTTPS only (FastAPI is bound to loopback)
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0, Description: "Caddy ACME HTTP-01 + redirect" }
+        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0, Description: "HTTPS and WSS" }
+  AdminSshIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: HasAdminSsh
+    Properties:
+      GroupId: !Ref AppSecurityGroup
+      IpProtocol: tcp
+      FromPort: 22
+      ToPort: 22
+      CidrIp: !Ref AdminSshCidr
+      Description: Admin SSH from one address
+  DbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Shadowtrace RDS - PostgreSQL from the app host only
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 5432, ToPort: 5432, SourceSecurityGroupId: !Ref AppSecurityGroup, Description: "App host" }
+
+  # ------------------------------------------------------------------ database
+  DbSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Shadowtrace private DB subnets (two AZs)
+      SubnetIds: [!Ref PrivateSubnetA, !Ref PrivateSubnetB]
+  Database:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      Engine: postgres
+      EngineVersion: !Ref DbEngineVersion
+      DBInstanceClass: !Ref DbInstanceClass
+      DBName: shadowtrace
+      MasterUsername: !Ref DbMasterUsername
+      # RDS generates the master password and keeps it in Secrets Manager.
+      ManageMasterUserPassword: true
+      AllocatedStorage: !Ref DbAllocatedGiB
+      StorageType: gp3
+      StorageEncrypted: true
+      MultiAZ: false
+      PubliclyAccessible: false
+      DBSubnetGroupName: !Ref DbSubnetGroup
+      VPCSecurityGroups: [!Ref DbSecurityGroup]
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      BackupRetentionPeriod: !Ref DbBackupRetentionDays
+      PreferredBackupWindow: "20:00-20:30"
+      CopyTagsToSnapshot: true
+      AutoMinorVersionUpgrade: true
+      DeletionProtection: !Ref DbDeletionProtection
+      EnablePerformanceInsights: false
+      MonitoringInterval: 0
+      CACertificateIdentifier: rds-ca-rsa2048-g1
+
+  # ---------------------------------------------------------------- app host
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - { Effect: Allow, Principal: { Service: ec2.amazonaws.com }, Action: sts:AssumeRole }
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - !If
+          - MakeBucket
+          - PolicyName: backup-bucket
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action: [s3:PutObject, s3:GetObject]
+                  Resource: !Sub "arn:aws:s3:::${BackupBucket}/backups/*"
+                - Effect: Allow
+                  Action: s3:ListBucket
+                  Resource: !Sub "arn:aws:s3:::${BackupBucket}"
+                  Condition: { StringLike: { "s3:prefix": ["backups/*"] } }
+          - !Ref AWS::NoValue
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties: { Roles: [!Ref InstanceRole] }
+
+  DataVolume:
+    Type: AWS::EC2::Volume
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      Size: !Ref DataVolumeGiB
+      VolumeType: gp3
+      Encrypted: true
+      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-data" }]
+
+  AppInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref InstanceType
+      KeyName: !If [HasKey, !Ref KeyName, !Ref AWS::NoValue]
+      IamInstanceProfile: !Ref InstanceProfile
+      SubnetId: !Ref PublicSubnet
+      SecurityGroupIds: [!Ref AppSecurityGroup]
+      MetadataOptions: { HttpTokens: required, HttpEndpoint: enabled }
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs: { VolumeSize: 16, VolumeType: gp3, Encrypted: true, DeleteOnTermination: true }
+      Tags:
+        - { Key: Name, Value: !Sub "${AWS::StackName}-app" }
+        - { Key: shadowtrace:domain, Value: !Ref DomainName }
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          # Host bootstrap only. The application release is installed afterwards
+          # with deploy/scripts/install_release.sh (docs/DEPLOYMENT.md).
+          set -euo pipefail
+          dnf -y install python3.11 python3.11-pip tar gzip xfsprogs postgresql16 logrotate
+          id shadowtrace >/dev/null 2>&1 || useradd --system --home-dir /srv/shadowtrace --shell /sbin/nologin shadowtrace
+          mkdir -p /srv/shadowtrace/releases /etc/shadowtrace /var/lib/shadowtrace /var/log/caddy
+          # Encrypted data volume -> /var/lib/shadowtrace (DATA_DIR, logs, ledger, backups).
+          VOL="${DataVolume}"
+          DEV="/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_${!VOL//-/}"
+          for i in $(seq 1 60); do [ -e "$DEV" ] && break; sleep 5; done
+          if [ -e "$DEV" ]; then
+            blkid "$DEV" >/dev/null 2>&1 || mkfs.xfs -L stdata "$DEV"
+            grep -q "LABEL=stdata" /etc/fstab || echo "LABEL=stdata /var/lib/shadowtrace xfs defaults,nofail 0 2" >> /etc/fstab
+            mount -a
+          fi
+          mkdir -p /var/lib/shadowtrace/{data,logs,ledger,backups,legacy-reports,legacy-intake}
+          chown -R shadowtrace:shadowtrace /var/lib/shadowtrace
+          chmod 750 /var/lib/shadowtrace
+          # RDS CA bundle for sslmode=verify-full.
+          curl -fsSL "https://truststore.pki.rds.amazonaws.com/${AWS::Region}/${AWS::Region}-bundle.pem" -o /etc/shadowtrace/rds-ca.pem
+          chmod 644 /etc/shadowtrace/rds-ca.pem
+          # Caddy, pinned by SHA-512 from the release checksums file.
+          ARCH=$(uname -m); case "$ARCH" in x86_64) CA=amd64; SUM=8220d1f013b6f27510247b2360c9e0ca9f018feebd82515f07635318b34ff9777ccc8fd0b6e6f2486ce3a33fe389fbb7db12d05baa474f4587509fb4f5ebf1c9;; aarch64) CA=arm64; SUM=d5a7c423853c24a799765e0e8210d5c7c22a8f56ed37a3cae2fb9f58be138853c02b4efd6b59d576e6d8c7c0d30b9c1592deeaa6a536ff69bcca23b8c1ea709c;; esac
+          cd /tmp && curl -fsSLO "https://github.com/caddyserver/caddy/releases/download/v2.11.4/caddy_2.11.4_linux_$CA.tar.gz"
+          echo "$SUM  caddy_2.11.4_linux_$CA.tar.gz" | sha512sum -c -
+          tar -xzf "caddy_2.11.4_linux_$CA.tar.gz" caddy && install -m 0755 caddy /usr/local/bin/caddy
+          id caddy >/dev/null 2>&1 || useradd --system --home-dir /var/lib/caddy --create-home --shell /sbin/nologin caddy
+          chown caddy:caddy /var/log/caddy
+          echo "bootstrap complete" > /var/lib/shadowtrace/.bootstrap-done
+
+  DataVolumeAttachment:
+    Type: AWS::EC2::VolumeAttachment
+    Properties: { InstanceId: !Ref AppInstance, VolumeId: !Ref DataVolume, Device: /dev/sdf }
+
+  AppAddress:
+    Type: AWS::EC2::EIP
+    Properties: { Domain: vpc }
+  AppAddressAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties: { AllocationId: !GetAtt AppAddress.AllocationId, InstanceId: !Ref AppInstance }
+
+  # ------------------------------------------------------------ backup bucket
+  BackupBucket:
+    Type: AWS::S3::Bucket
+    Condition: MakeBucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules: [{ ObjectOwnership: BucketOwnerEnforced }]
+      # No versioning: deleting an archive deletes it (no hidden noncurrent copies
+      # holding erased candidates). Archives expire after BackupRetentionDays.
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-backups
+            Status: Enabled
+            Prefix: backups/
+            ExpirationInDays: !Ref BackupRetentionDays
+            AbortIncompleteMultipartUpload: { DaysAfterInitiation: 1 }
+  BackupBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: MakeBucket
+    Properties:
+      Bucket: !Ref BackupBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource: [!Sub "arn:aws:s3:::${BackupBucket}", !Sub "arn:aws:s3:::${BackupBucket}/*"]
+            Condition: { Bool: { "aws:SecureTransport": "false" } }
+
+Outputs:
+  PublicIp:
+    Value: !Ref AppAddress
+    Description: Point your hostname's A record here.
+  InstanceId:
+    Value: !Ref AppInstance
+    Description: aws ssm start-session --target <this>
+  DataVolumeId:
+    Value: !Ref DataVolume
+  DbEndpoint:
+    Value: !GetAtt Database.Endpoint.Address
+  DbPort:
+    Value: !GetAtt Database.Endpoint.Port
+  DbMasterSecretArn:
+    Value: !GetAtt Database.MasterUserSecret.SecretArn
+    Description: RDS-managed master credentials (used once, to create the app and migration roles).
+  SiteHostname:
+    Value: !Ref DomainName
+    Description: The hostname Caddy should serve (set it in /etc/caddy/Caddyfile).
+  BackupBucketName:
+    Condition: MakeBucket
+    Value: !Ref BackupBucket
