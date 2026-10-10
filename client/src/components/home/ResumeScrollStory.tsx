@@ -243,7 +243,7 @@ export function ResumeScrollStory({ copy, nextId }: { copy: ReactNode; nextId: s
   };
 
   return (
-    <section ref={sectionRef} className="story" data-mode={mode} data-stage={active} aria-labelledby="hero-title">
+    <section ref={sectionRef} className="story on-charcoal" data-mode={mode} data-stage={active} aria-labelledby="hero-title">
       <div className="story-sticky">
         <div className="story-grid content-width">
           <div className="story-copy">

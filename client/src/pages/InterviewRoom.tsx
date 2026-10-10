@@ -1,9 +1,7 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { MicIcon, SendIcon, SquareIcon, VideoIcon, VideoOffIcon } from "lucide-react";
 
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardPanel } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { toastManager } from "@/components/ui/toast";
@@ -31,13 +29,6 @@ const DIFFICULTY_LABEL: Record<string, string> = {
   realistic: "Realistic",
   panel: "Hard",
 };
-
-const toneClasses = {
-  idle: "text-muted-foreground",
-  busy: "text-warning",
-  ok: "text-success",
-  bad: "text-destructive",
-} as const;
 
 export type InterviewRoomProps = {
   session: ReturnType<typeof useSession>;
@@ -136,96 +127,109 @@ export function InterviewRoom({ session, onFinished }: InterviewRoomProps) {
   const voiceTrouble = session.lane === "voice" && (session.voiceProblem || session.micError);
 
   return (
-    <div className="interview-layout mx-auto flex w-full flex-col gap-5">
-      <header className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <h2 className="text-xl">{session.isPractice ? "Targeted practice" : "Interview in progress"}</h2>
-          <Badge variant={session.lane === "text" ? "muted" : "secondary"}>
-            {session.lane === "text" ? "typing" : "voice"}
-          </Badge>
-          {session.lane === "voice" &&
-            session.voiceInfo &&
-            session.voiceInfo.provider !== "deepgram" && (
-              <Badge variant="outline" title="Not a real provider session">
-                mock audio
-              </Badge>
-            )}
-          {session.interviewer === "deterministic" && (
-            <Badge
-              variant="outline"
-              title="No interviewer model is configured; questions come from the interview plan"
-            >
-              plan-based interviewer (no AI model)
-            </Badge>
-          )}
-          <Badge variant="muted">
-            {DIFFICULTY_LABEL[session.intensity] ?? session.intensity} difficulty
-          </Badge>
-        </div>
-        <p className={cn("text-sm", toneClasses[tone])} aria-live="polite">
-          {statusText}
-        </p>
-      </header>
-
-      {progress && progress.round_count > 1 && (
-        <ol className="flex flex-wrap gap-2 text-xs" aria-label="Interview rounds">
-          {progress.rounds.map((item, index) => (
-            <li
-              key={item.round}
-              className={cn(
-                "rounded-full border px-3 py-1",
-                item.state === "active" && "border-primary text-primary",
-                item.state === "done" && "border-border text-muted-foreground line-through",
-                item.state === "pending" && "border-dashed border-border text-muted-foreground",
+    <div className="interview-layout mx-auto flex w-full flex-col gap-4">
+      {/* The stage: what is happening, which round, and the question. Quiet by design. */}
+      <section className="room-stage on-charcoal" aria-label="Interview status and current question">
+        <header className="room-topline">
+          <div className="flex flex-wrap items-center gap-3">
+            <h2>{session.isPractice ? "Targeted practice" : "Interview in progress"}</h2>
+            <div className="room-tags">
+              <span className="room-tag">{session.lane === "text" ? "typing" : "voice"}</span>
+              {session.lane === "voice" &&
+                session.voiceInfo &&
+                session.voiceInfo.provider !== "deepgram" && (
+                  <span className="room-tag" data-kind="notice" title="Not a real provider session">
+                    mock audio
+                  </span>
+                )}
+              {session.interviewer === "deterministic" && (
+                <span
+                  className="room-tag"
+                  data-kind="notice"
+                  title="No interviewer model is configured; questions come from the interview plan"
+                >
+                  plan-based interviewer (no AI model)
+                </span>
               )}
-            >
-              {index + 1}. {item.label}
-            </li>
-          ))}
-        </ol>
-      )}
+              <span className="room-tag">
+                {DIFFICULTY_LABEL[session.intensity] ?? session.intensity} difficulty
+              </span>
+            </div>
+          </div>
+          <p className="room-status" data-tone={tone} aria-live="polite">
+            {statusText}
+          </p>
+        </header>
 
-      {progress ? (
-        <div className="flex flex-col gap-2">
-          <Progress
-            value={progress.core_asked}
-            max={Math.max(1, progress.core_total)}
-            label={`${progress.round_label}: core question ${progress.core_asked} of ${progress.core_total}`}
-          />
-          <p className="text-xs text-muted-foreground">
-            {progress.round_label}
-            {progress.round_count > 1
-              ? ` (round ${progress.round_index + 1} of ${progress.round_count})`
-              : ""}
-            : core question {progress.core_asked} of {progress.core_total} ·{" "}
-            {progress.follow_ups} follow-up{progress.follow_ups === 1 ? "" : "s"} ·{" "}
-            {progress.answers} answer{progress.answers === 1 ? "" : "s"} so far · about{" "}
-            {Math.max(0, Math.round(progress.round_seconds_remaining / 60))} min left in this round
+        {progress && progress.round_count > 1 && (
+          <ol className="room-rounds" aria-label="Interview rounds">
+            {progress.rounds.map((item, index) => (
+              <li
+                key={item.round}
+                data-state={item.state}
+                aria-current={item.state === "active" ? "step" : undefined}
+              >
+                <span>{String(index + 1).padStart(2, "0")}</span>
+                {item.label}
+                <span className="sr-only">
+                  {item.state === "active" ? " (current)" : item.state === "done" ? " (done)" : " (next)"}
+                </span>
+              </li>
+            ))}
+          </ol>
+        )}
+
+        {progress ? (
+          <div className="room-progress">
+            <Progress
+              value={progress.core_asked}
+              max={Math.max(1, progress.core_total)}
+              label={`${progress.round_label}: core question ${progress.core_asked} of ${progress.core_total}`}
+            />
+            <p>
+              {progress.round_label}
+              {progress.round_count > 1
+                ? ` (round ${progress.round_index + 1} of ${progress.round_count})`
+                : ""}
+              : core question {progress.core_asked} of {progress.core_total} ·{" "}
+              {progress.follow_ups} follow-up{progress.follow_ups === 1 ? "" : "s"} ·{" "}
+              {progress.answers} answer{progress.answers === 1 ? "" : "s"} so far · about{" "}
+              {Math.max(0, Math.round(progress.round_seconds_remaining / 60))} min left in this round
+            </p>
+          </div>
+        ) : (
+          <p className="room-progress text-sm">Waiting for the first question…</p>
+        )}
+
+        {session.roundNotice && (
+          <p className="room-handover" aria-live="polite">
+            Handover: {session.roundNotice.fromLabel} → {session.roundNotice.toLabel}.{" "}
+            <span>
+              Carried forward: {session.roundNotice.carried} of your statements and{" "}
+              {session.roundNotice.open} open question
+              {session.roundNotice.open === 1 ? "" : "s"} — no ratings.
+            </span>
+          </p>
+        )}
+
+        {/* The question the interviewer is asking. */}
+        <div className="live-question">
+          <div className="question-persona"><span aria-hidden="true">{session.utterance?.speaker?.slice(0, 2).toUpperCase() || "ST"}</span><span>{session.utterance?.speaker ?? "Your interviewer"}</span></div>
+          <p className="question-text" aria-live="polite">
+            {session.utterance?.text ??
+              "Waiting for the interviewer to open the session…"}
           </p>
         </div>
-      ) : (
-        <p className="text-xs text-muted-foreground">Waiting for the first question…</p>
-      )}
-
-      {session.roundNotice && (
-        <p className="rounded-md bg-muted px-3 py-2 text-sm" aria-live="polite">
-          Handover: {session.roundNotice.fromLabel} → {session.roundNotice.toLabel}.{" "}
-          <span className="text-muted-foreground">
-            Carried forward: {session.roundNotice.carried} of your statements and{" "}
-            {session.roundNotice.open} open question
-            {session.roundNotice.open === 1 ? "" : "s"} — no ratings.
-          </span>
-        </p>
-      )}
+      </section>
 
       {session.providerWarning && (
-        <p className="rounded-md bg-warning/10 px-3 py-2 text-sm text-warning">
+        <p className="notice" data-tone="warning">
           {session.providerWarning}
         </p>
       )}
 
       {session.sessionWarning && session.status !== "complete" && (
-        <div role="status" aria-live="polite" className="session-warning flex flex-wrap items-center gap-3 rounded-md bg-warning/10 px-3 py-2 text-sm text-warning">
+        <div role="status" aria-live="polite" className="session-warning notice flex-wrap items-center" data-tone="warning">
           <p className="flex-1">{warningText(session.sessionWarning)}</p>
           {session.sessionWarning.reason === "idle" && (
             <Button variant="outline" size="sm" onClick={session.stillHere}>
@@ -236,7 +240,7 @@ export function InterviewRoom({ session, onFinished }: InterviewRoomProps) {
       )}
 
       {voiceTrouble && (
-        <div role="alert" className="flex flex-wrap items-center gap-3 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+        <div role="alert" className="notice flex-wrap items-center" data-tone="error">
           <p className="flex-1">
             {session.micError ? `Microphone problem: ${session.micError}` : `Voice problem: ${session.voiceProblem}`}
           </p>
@@ -252,7 +256,7 @@ export function InterviewRoom({ session, onFinished }: InterviewRoomProps) {
       )}
 
       {session.status === "complete" && (
-        <div className="flex items-center gap-3 rounded-md bg-muted px-3 py-2 text-sm">
+        <div className="notice flex-wrap items-center" data-tone="info">
           <p className="flex-1">
             {session.endedReason === "time_limit" && "The session reached its time limit, so it was closed. "}
             {session.endedReason === "idle" && "The session was closed because there was no answer for a while. "}
@@ -266,28 +270,9 @@ export function InterviewRoom({ session, onFinished }: InterviewRoomProps) {
         </div>
       )}
 
-      {/* The question the interviewer is asking. */}
-      <Card className="live-question">
-        <CardPanel>
-          <div className="question-persona"><span aria-hidden="true">{session.utterance?.speaker?.slice(0, 2).toUpperCase() || "ST"}</span><span>{session.utterance?.speaker ?? "Your interviewer"}</span></div>
-          <p className="question-text" aria-live="polite">
-            {session.utterance?.text ??
-              "Waiting for the interviewer to open the session…"}
-          </p>
-        </CardPanel>
-      </Card>
-
       {/* Whose turn it is, and what the candidate is saying right now. */}
       {session.lane === "voice" && session.running && session.micActive && (
-        <div
-          className={cn(
-            "rounded-lg border px-4 py-3",
-            session.floor === "listening"
-              ? "border-primary/60 bg-primary/5"
-              : "border-dashed border-input",
-          )}
-          aria-live="polite"
-        >
+        <div className="room-floor" data-floor={session.floor} aria-live="polite">
           {session.floor === "interviewer" && (
             <p className="text-sm text-muted-foreground">
               The interviewer is speaking. Your microphone is off until the question finishes.
@@ -331,8 +316,9 @@ export function InterviewRoom({ session, onFinished }: InterviewRoomProps) {
           {session.floor === "listening" && (
             <>
               <div className="mb-1 flex items-center justify-between gap-3">
-                <span className="flex items-center gap-2 text-xs uppercase tracking-wide text-primary">
-                  <span className="h-2 w-2 animate-pulse rounded-full bg-primary" />
+                <span className="meta-label flex items-center gap-2 text-primary">
+                  {/* Steady marker, not a pulse: it says the mic is open, not how loud you are. */}
+                  <span className={cn("h-2 w-2 rounded-full", session.muted ? "border border-current" : "bg-primary")} aria-hidden="true" />
                   {session.muted ? "Muted" : "Listening — you"}
                 </span>
                 <Button size="sm" onClick={session.finishAnswer} disabled={!session.interim}>
@@ -354,8 +340,7 @@ export function InterviewRoom({ session, onFinished }: InterviewRoomProps) {
       )}
 
       {session.lane === "voice" ? (
-        <Card>
-          <CardPanel className="pt-5">
+        <div className="room-answer">
             <Suspense
               fallback={
                 <p className="py-6 text-center text-sm text-muted-foreground">
@@ -370,12 +355,10 @@ export function InterviewRoom({ session, onFinished }: InterviewRoomProps) {
                 onToggleMute={session.toggleMute}
               />
             </Suspense>
-          </CardPanel>
-        </Card>
+        </div>
       ) : (
-        <Card>
-          <CardPanel className="flex flex-col gap-2 pt-5">
-            <label className="text-sm font-medium" htmlFor="typed-answer">
+        <div className="room-answer flex flex-col gap-2">
+            <label className="meta-label" htmlFor="typed-answer">
               Your answer
             </label>
             <div className="flex gap-2">
@@ -401,8 +384,7 @@ export function InterviewRoom({ session, onFinished }: InterviewRoomProps) {
                 <SendIcon />
               </Button>
             </div>
-          </CardPanel>
-        </Card>
+        </div>
       )}
 
       <div className="room-controls flex flex-wrap items-center gap-2">
@@ -487,15 +469,14 @@ export function InterviewRoom({ session, onFinished }: InterviewRoomProps) {
         </Button>
       </div>
 
-      <p className="text-xs text-muted-foreground">
+      <p className="room-keys">
         Keys: <kbd>Esc</kbd> interrupt · <kbd>M</kbd> mute · <kbd>T</kbd> switch to typing ·{" "}
         <kbd>/</kbd> focus the answer box · <kbd>Enter</kbd> send a typed answer.
       </p>
 
-      <Card className="room-transcript">
-        <CardPanel className="pt-5">
+      <section className="room-transcript" aria-labelledby="transcript-heading">
           <div className="flex items-center justify-between">
-            <h3 className="text-sm font-medium">Your conversation</h3>
+            <h3 id="transcript-heading" className="text-base">Your conversation</h3>
             <Button variant="ghost" size="sm" onClick={() => setShowTranscript((on) => !on)} aria-expanded={showTranscript}>
               {showTranscript ? "Hide" : "Show"}
             </Button>
@@ -523,14 +504,13 @@ export function InterviewRoom({ session, onFinished }: InterviewRoomProps) {
                 </p>
               )}
               <div ref={transcriptEnd} />
-              <p className="text-xs text-muted-foreground">
+              <p className="text-sm text-muted-foreground">
                 Your lines are exactly what was recorded for feedback. If you interrupt
                 the interviewer, the saved transcript keeps only what you heard.
               </p>
             </div>
           )}
-        </CardPanel>
-      </Card>
+      </section>
 
       {videoOn && (
         <div className="flex items-start gap-3">
