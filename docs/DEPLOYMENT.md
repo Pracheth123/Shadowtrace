@@ -271,7 +271,39 @@ and the budget.
 | Full suite on both backends | ✓ | ✓ | — | — |
 | Backup → later deletion → isolated restore → reconcile | ✓ | ✓ (pytest, real PostgreSQL) | — | — |
 | CloudFormation template | ✓ | ✓ cfn-lint only (not launched) | — | — |
-| Release, install, rollback, maintenance, backup scripts | ✓ | see rehearsal below | — | — |
-| HTTPS/WSS via Caddy | ✓ | see rehearsal below (Caddy internal CA, not a public certificate) | — | — |
+| Release, install, rollback, maintenance, backup scripts | ✓ | ✓ rehearsal (22/22) | — | — |
+| HTTPS/WSS via Caddy | ✓ | ✓ rehearsal (Caddy internal CA, not a public certificate) | — | — |
 | Cost worksheet | ✓ | ✓ public list prices | — | account plan/credits unknown |
 | Live voice, mobile HTTPS, latency | — | — | — | pending (no keys, devices, or deployment) |
+
+### Local production rehearsal (2026-10-10)
+
+`deploy/rehearsal/rehearse.sh dist-release/shadowtrace-fa7ebe855725.tar.gz` —
+Docker on Windows: an Amazon Linux 2023 container running the pinned Caddy
+2.11.4 (SHA-512 verified) and the release installed by the real
+`install_release.sh`, against PostgreSQL 16.4 with TLS from a throwaway CA
+(`sslmode=verify-full`), roles from `deploy/sql/roles.sql`. A shim stands in
+for systemd, starting the unit's exact ExecStart. **22/22 checks passed:**
+app role cannot create tables and reads over verify-full TLS; schema migrated
+by the migration role; HTTPS serves the client; `/ready` reports PostgreSQL
+and schema ready; `/api/diagnostics` returns 404 publicly; FastAPI listens on
+127.0.0.1:8000 only; guest + history over HTTPS; WSS upgrade through Caddy
+(production refuses a session without intake); app-role idempotent write and
+erasure; guest identity survives a restart; maintenance on/drain/off; quiesced
+backup with PostgreSQL snapshot that verifies; release B install,
+`rollback.sh` to A, and a deliberately broken release C rolled back
+automatically by the readiness gate.
+
+Defects the rehearsal found and that are fixed: the lock needs Python ≥ 3.12
+(host now uses python3.12); releases built on Windows carried CRLF (archive
+now ignores `core.autocrlf`); a first install recorded itself as the previous
+release (rollback looped); Caddy could not read the group-only release (403);
+`/api/diagnostics` was publicly reachable (Caddy orders `handle` before
+`respond`). Not covered: real systemd, a public ACME certificate, EBS
+mounting, the S3 copy, an intake/interview with real providers (production
+refuses mocks), and Arm.
+
+Note: the rehearsal PostgreSQL also accepted non-TLS connections. RDS for
+PostgreSQL 15+ defaults `rds.force_ssl=1`; confirm it on the instance's
+parameter group so only TLS connections are accepted.
+
