@@ -43,6 +43,7 @@ licences with `pip show <name>` before redistribution.
 | clsx | 2.1.1 | MIT |
 | class-variance-authority | 0.7.1 | Apache-2.0 |
 | tailwind-merge | 2.6.1 | MIT |
+| motion (with framer-motion, motion-dom 13.4.1; motion-utils 13.3.0) | 13.4.1 | MIT |
 | vite | 5.4.21 | MIT (dev) |
 | typescript | 5.9.3 | Apache-2.0 (dev) |
 | tailwindcss | 3.4.19 | MIT (dev) |
@@ -74,8 +75,51 @@ were authored for this project. Design references: [Radix Themes](https://github
 [shadcn/ui](https://github.com/shadcn-ui/ui). No source or artwork from these
 references was copied. The existing upload component identifies Origin UI as
 its source; the team should confirm its original provenance and licence.
-System fonts replace the external font requests; no new font assets are bundled.
+No external font host is contacted. Font files are self-hosted (see "Fonts" below).
 
 The optional browser test harness uses Playwright and axe-core. These test-only
 packages are installed separately from the application; their upstream licences
 apply. Browser binaries are not included in the source archive.
+
+## October 8 landing-page motion and "Papers to Practice" story
+
+- **Motion** (`motion@13.4.1`, https://github.com/motiondivision/motion), MIT,
+  Copyright (c) 2024 Motion B.V. (from the package's LICENSE.md). Installed from
+  npm; free core APIs only, with no Motion+ APIs. This is the only animation
+  library in the client.
+- **Codrops ScrollAnimationsGrid** (https://github.com/codrops/ScrollAnimationsGrid)
+  and **Codrops ImageStackGrid** (https://github.com/codrops/ImageStackGrid), both
+  declared MIT. These were references for scroll-linked card choreography and
+  stack-to-composition movement. No code, images, fonts or brands were copied, and
+  their GSAP/Lenis stack was not installed.
+- **Magic UI** (https://github.com/magicuidesign/magicui), MIT, Copyright (c)
+  Magic UI. Its Animated Beam was the reference for a restrained SVG connector.
+  An earlier adaptation (`ProcessBeam.tsx`, which carried Magic UI's notice) has
+  been removed. The story's connector in `ResumeScrollStory.tsx` is separate code
+  (a cubic path between computed anchors, drawn with `pathLength`), and no Magic
+  UI source remains in the repository. Nothing was installed through the registry CLI.
+- **React Bits Tilted Card**: this was inspiration only for an earlier tilt
+  effect, which has since been removed. No code was used.
+- The paper artwork (HTML/CSS) and all example content in
+  `client/src/components/home/story-data.ts` (statements, questions, answers,
+  coaching) were written for this project. They are labelled as illustrative
+  examples, and they contain no personal information, testimonials, metrics or scores.
+
+See `docs/RESUME_SCROLL_STORY.md` and `docs/LANDING_PAGE_MOTION.md`.
+
+## Fonts (self-hosted, October 8)
+
+Bundled as WOFF2 in `client/src/assets/fonts/` from the pinned npm builds
+`@fontsource-variable/newsreader@5.3.0` and
+`@fontsource-variable/schibsted-grotesk@5.3.0` (latin subset, downloaded as
+files; no npm dependency added). Each family's licence text sits beside it.
+
+| Family | Files | Licence | Copyright |
+|---|---|---|---|
+| Newsreader (variable: wght 200–800, opsz 6–72; normal + italic) | `newsreader-latin-opsz-{normal,italic}.woff2` | SIL OFL 1.1 (`OFL-Newsreader.txt`) | 2020 The Newsreader Project Authors (Production Type) |
+| Schibsted Grotesk (variable: wght 400–900; normal + italic) | `schibsted-grotesk-latin-wght-{normal,italic}.woff2` | SIL OFL 1.1 (`OFL-SchibstedGrotesk.txt`) | 2023 The Schibsted-Grotesk Project Authors |
+
+SHA-256: newsreader normal `6e4f2958…d101`, italic `5dfcd10d…7506`;
+schibsted normal `4c8b93f4…5e05`, italic `4c72510c…65f7`. The OFL permits
+bundling and redistribution with the licence; the fonts may not be sold on
+their own, and modified versions may not use the reserved font names.
