@@ -394,6 +394,7 @@ let browser;
       assert.equal(await p.locator('.paper-flight').count(), 0);
       assert.equal(await p.locator('.story-static-panel').count(), 4);
       assert.equal(await p.locator('.story [inert], .story [aria-hidden=true] [role=tab]').count(), 0, 'static panels stay focusable');
+      assert.equal(await p.locator('.reveal[data-reveal=pending]').count(), 0, 'reduced motion: no section waits hidden for a scroll reveal');
       assert.notEqual(await p.locator('.story-sticky').evaluate((el) => getComputedStyle(el).position), 'sticky');
       const moving = await p.evaluate(() => [...document.querySelectorAll('.story *')].filter((el) => { const t = getComputedStyle(el).transform; return t !== 'none' && !/^matrix\(1, 0, 0, 1, 0, 0\)$/.test(t); }).length);
       assert.equal(moving, 0, 'no transformed (rotated or offset) elements');
